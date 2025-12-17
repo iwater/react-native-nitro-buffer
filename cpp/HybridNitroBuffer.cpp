@@ -217,6 +217,177 @@ double HybridNitroBuffer::write(const std::shared_ptr<ArrayBuffer> &buffer,
   return actualWrite;
 }
 
+// UTF-8 replacement character (U+FFFD) encoded as UTF-8
+static const char UTF8_REPLACEMENT[] = "\xEF\xBF\xBD";
+
+// Decode UTF-8 with WHATWG-compliant error handling (replace invalid bytes with
+// U+FFFD) This matches Node.js Buffer.toString('utf8') behavior
+static std::string decodeUtf8WithReplacement(const uint8_t *data, size_t len) {
+  std::string result;
+  result.reserve(len); // Minimum reservation
+
+  size_t i = 0;
+  while (i < len) {
+    uint8_t byte1 = data[i];
+
+    // ASCII (0x00-0x7F)
+    if (byte1 <= 0x7F) {
+      result.push_back(static_cast<char>(byte1));
+      i++;
+      continue;
+    }
+
+    // Invalid leading byte (0x80-0xBF or 0xF8-0xFF)
+    if (byte1 < 0xC2 || byte1 > 0xF4) {
+      result.append(UTF8_REPLACEMENT);
+      i++;
+      continue;
+    }
+
+    // 2-byte sequence (0xC2-0xDF)
+    if (byte1 >= 0xC2 && byte1 <= 0xDF) {
+      if (i + 1 >= len) {
+        result.append(UTF8_REPLACEMENT);
+        i++;
+        continue;
+      }
+      uint8_t byte2 = data[i + 1];
+      if ((byte2 & 0xC0) != 0x80) {
+        result.append(UTF8_REPLACEMENT);
+        i++;
+        continue;
+      }
+      // Valid 2-byte sequence
+      result.push_back(static_cast<char>(byte1));
+      result.push_back(static_cast<char>(byte2));
+      i += 2;
+      continue;
+    }
+
+    // 3-byte sequence (0xE0-0xEF)
+    if (byte1 >= 0xE0 && byte1 <= 0xEF) {
+      if (i + 2 >= len) {
+        result.append(UTF8_REPLACEMENT);
+        i++;
+        continue;
+      }
+      uint8_t byte2 = data[i + 1];
+      uint8_t byte3 = data[i + 2];
+
+      // Check continuation bytes
+      if ((byte2 & 0xC0) != 0x80 || (byte3 & 0xC0) != 0x80) {
+        result.append(UTF8_REPLACEMENT);
+        i++;
+        continue;
+      }
+
+      // Check for overlong encoding and surrogate halves
+      if (byte1 == 0xE0 && byte2 < 0xA0) {
+        result.append(UTF8_REPLACEMENT);
+        i++;
+        continue;
+      }
+      if (byte1 == 0xED && byte2 >= 0xA0) {
+        // Surrogate halves (0xD800-0xDFFF) are invalid in UTF-8
+        result.append(UTF8_REPLACEMENT);
+        i++;
+        continue;
+      }
+
+      // Valid 3-byte sequence
+      result.push_back(static_cast<char>(byte1));
+      result.push_back(static_cast<char>(byte2));
+      result.push_back(static_cast<char>(byte3));
+      i += 3;
+      continue;
+    }
+
+    // 4-byte sequence (0xF0-0xF4)
+    if (byte1 >= 0xF0 && byte1 <= 0xF4) {
+      if (i + 3 >= len) {
+        result.append(UTF8_REPLACEMENT);
+        i++;
+        continue;
+      }
+      uint8_t byte2 = data[i + 1];
+      uint8_t byte3 = data[i + 2];
+      uint8_t byte4 = data[i + 3];
+
+      // Check continuation bytes
+      if ((byte2 & 0xC0) != 0x80 || (byte3 & 0xC0) != 0x80 ||
+          (byte4 & 0xC0) != 0x80) {
+        result.append(UTF8_REPLACEMENT);
+        i++;
+        continue;
+      }
+
+      // Check for overlong encoding and out-of-range code points
+      if (byte1 == 0xF0 && byte2 < 0x90) {
+        result.append(UTF8_REPLACEMENT);
+        i++;
+        continue;
+      }
+      if (byte1 == 0xF4 && byte2 > 0x8F) {
+        // Code points above U+10FFFF
+        result.append(UTF8_REPLACEMENT);
+        i++;
+        continue;
+      }
+
+      // Valid 4-byte sequence
+      result.push_back(static_cast<char>(byte1));
+      result.push_back(static_cast<char>(byte2));
+      result.push_back(static_cast<char>(byte3));
+      result.push_back(static_cast<char>(byte4));
+      i += 4;
+      continue;
+    }
+
+    // Fallback (should not reach here)
+    result.append(UTF8_REPLACEMENT);
+    i++;
+  }
+
+  return result;
+}
+
+// Decode as latin1/binary - each byte maps directly to Unicode code point
+// 0x00-0xFF
+static std::string decodeLatin1(const uint8_t *data, size_t len) {
+  std::string result;
+  result.reserve(len * 2); // Worst case: all bytes > 0x7F need 2 bytes in UTF-8
+
+  for (size_t i = 0; i < len; i++) {
+    uint8_t byte = data[i];
+    if (byte <= 0x7F) {
+      result.push_back(static_cast<char>(byte));
+    } else {
+      // Encode as 2-byte UTF-8 sequence
+      result.push_back(static_cast<char>(0xC0 | (byte >> 6)));
+      result.push_back(static_cast<char>(0x80 | (byte & 0x3F)));
+    }
+  }
+
+  return result;
+}
+
+// Decode as ASCII - bytes > 0x7F are replaced with U+FFFD
+static std::string decodeAscii(const uint8_t *data, size_t len) {
+  std::string result;
+  result.reserve(len);
+
+  for (size_t i = 0; i < len; i++) {
+    uint8_t byte = data[i];
+    if (byte <= 0x7F) {
+      result.push_back(static_cast<char>(byte));
+    } else {
+      result.append(UTF8_REPLACEMENT);
+    }
+  }
+
+  return result;
+}
+
 std::string
 HybridNitroBuffer::decode(const std::shared_ptr<ArrayBuffer> &buffer,
                           double offset, double length,
@@ -232,8 +403,15 @@ HybridNitroBuffer::decode(const std::shared_ptr<ArrayBuffer> &buffer,
   size_t actualRead = std::min(available, count);
 
   if (encoding == "utf8" || encoding == "utf-8") {
-    // Check for null termination? No, ArrayBuffer may not be null terminated.
-    return std::string((char *)(data + start), actualRead);
+    // WHATWG-compliant UTF-8 decoding with replacement character for invalid
+    // sequences
+    return decodeUtf8WithReplacement(data + start, actualRead);
+  } else if (encoding == "latin1" || encoding == "binary") {
+    // Each byte maps to Unicode code point 0x00-0xFF
+    return decodeLatin1(data + start, actualRead);
+  } else if (encoding == "ascii") {
+    // ASCII with replacement for non-ASCII bytes
+    return decodeAscii(data + start, actualRead);
   } else if (encoding == "hex") {
     std::string hex;
     hex.reserve(actualRead * 2);
@@ -248,7 +426,8 @@ HybridNitroBuffer::decode(const std::shared_ptr<ArrayBuffer> &buffer,
     return base64_encode(data + start, (unsigned int)actualRead);
   }
 
-  return std::string((char *)(data + start), actualRead);
+  // Default: UTF-8 with replacement
+  return decodeUtf8WithReplacement(data + start, actualRead);
 }
 
 double HybridNitroBuffer::compare(const std::shared_ptr<ArrayBuffer> &a,

@@ -124,6 +124,21 @@ This library achieves **100% API compatibility** with Node.js `Buffer`.
     const cBuf = CraftzBuffer.from(nBuf); // Works!
     ```
 
+## ⚠️ Compatibility Notes
+
+### `toString('ascii')` Behavior
+
+When decoding binary data with non-ASCII bytes (0x80-0xFF), `react-native-nitro-buffer` follows the **Node.js standard** by replacing invalid bytes with the Unicode replacement character (`U+FFFD`, displayed as `�`).
+
+```javascript
+const buf = Buffer.from([0x48, 0x69, 0x80, 0xFF, 0x21]); // "Hi" + invalid bytes + "!"
+buf.toString('ascii');
+// Nitro (Node.js compatible): "Hi��!" (length: 5)
+// @craftzdog/react-native-buffer: "Hi!" (length: 5) - incorrectly drops invalid bytes
+```
+
+This ensures consistent behavior with Node.js when handling binary protocols like WebSocket messages containing mixed text and binary data (e.g., Microsoft TTS audio streams).
+
 ## 📄 License
 
 ISC

@@ -124,6 +124,21 @@ buf2.writeUInt8(0x12, 0); // (注意：可通过标准 Uint8Array API 使用类�
     const cBuf = CraftzBuffer.from(nBuf); // 正常工作!
     ```
 
+## ⚠️ 兼容性说明
+
+### `toString('ascii')` 行为差异
+
+当解码包含非 ASCII 字节 (0x80-0xFF) 的二进制数据时，`react-native-nitro-buffer` 遵循 **Node.js 标准**，使用 Unicode 替换字符 (`U+FFFD`，显示为 `�`) 替换无效字节。
+
+```javascript
+const buf = Buffer.from([0x48, 0x69, 0x80, 0xFF, 0x21]); // "Hi" + 无效字节 + "!"
+buf.toString('ascii');
+// Nitro (Node.js 兼容): "Hi��!" (length: 5)
+// @craftzdog/react-native-buffer: "Hi!" (length: 5) - 错误地丢弃了无效字节
+```
+
+这确保了在处理包含混合文本和二进制数据的二进制协议（如包含音频流的微软 TTS WebSocket 消息）时与 Node.js 行为一致。
+
 ## 📄 许可
 
 ISC
