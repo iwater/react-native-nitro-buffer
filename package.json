@@ -1,0 +1,50 @@
+{
+    "name": "react-native-nitro-buffer",
+    "version": "0.0.1",
+    "description": "Node.js compatible buffer module for React Native",
+    "main": "lib/index.js",
+    "module": "lib/index.js",
+    "types": "lib/index.d.ts",
+    "scripts": {
+        "build": "tsc",
+        "test": "jest",
+        "prepublishOnly": "npm run build"
+    },
+    "keywords": [
+        "react-native",
+        "ios",
+        "android",
+        "buffer",
+        "node-buffer",
+        "nitro"
+    ],
+    "author": "iwater <iwater@gmail.com>",
+    "license": "ISC",
+    "peerDependencies": {
+        "react": "*",
+        "react-native": "*",
+        "react-native-nitro-modules": "*"
+    },
+    "devDependencies": {
+        "@types/jest": "^30.0.0",
+        "@types/node": "^18.19.130",
+        "@types/react": "*",
+        "jest": "^29.0.0",
+        "react-native-nitro-modules": "*",
+        "ts-jest": "^29.0.0",
+        "typescript": "^5.0.0"
+    },
+    "dependencies": {
+        "react-native-nitro-modules": "*"
+    },
+    "packageManager": "yarn@4.12.0",
+    "files": [
+        "lib/",
+        "src/",
+        "cpp/",
+        "ios/",
+        "android/",
+        "nitrogen/",
+        "*.podspec"
+    ]
+}
