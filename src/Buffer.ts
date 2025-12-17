@@ -12,6 +12,8 @@ function getNative(): NitroBuffer {
 }
 
 export class Buffer extends Uint8Array {
+    static poolSize = 8192
+
     constructor(length: number)
     constructor(array: Uint8Array)
     constructor(arrayBuffer: ArrayBuffer, byteOffset?: number, length?: number)
@@ -59,6 +61,9 @@ export class Buffer extends Uint8Array {
         if (Array.isArray(value)) {
             return new Buffer(new Uint8Array(value).buffer)
         }
+        if (typeof value === 'object' && value !== null && value.type === 'Buffer' && Array.isArray(value.data)) {
+            return new Buffer(value.data)
+        }
         throw new TypeError('Unsupported type for Buffer.from')
     }
 
@@ -98,6 +103,12 @@ export class Buffer extends Uint8Array {
 
     static compare(buf1: Uint8Array, buf2: Uint8Array): number {
         return getNative().compare(buf1.buffer as ArrayBuffer, buf1.byteOffset, buf1.byteLength, buf2.buffer as ArrayBuffer, buf2.byteOffset, buf2.byteLength)
+    }
+
+    equals(otherBuffer: Uint8Array): boolean {
+        if (!Buffer.isBuffer(otherBuffer)) throw new TypeError('Argument must be a Buffer')
+        if (this === otherBuffer) return true
+        return Buffer.compare(this, otherBuffer) === 0
     }
 
     static copyBytesFrom(view: ArrayBufferView, offset?: number, length?: number): Buffer {
@@ -598,7 +609,21 @@ export class Buffer extends Uint8Array {
         }
     }
 
-    static poolSize: number = 8192
+    inspect(): string {
+        let str = ''
+        const max = 50 // Default max bytes to inspect
+        const len = Math.min(this.length, max)
+        for (let i = 0; i < len; i++) {
+            if (i > 0) str += ' '
+            str += this[i].toString(16).padStart(2, '0')
+        }
+        if (this.length > max) str += ' ... ' + (this.length - max) + ' more bytes'
+        return '<Buffer ' + str + '>'
+    }
+
+    [Symbol.for('nodejs.util.inspect.custom')]() {
+        return this.inspect()
+    }
 
     static isEncoding(encoding: string): boolean {
         switch (encoding.toLowerCase()) {
