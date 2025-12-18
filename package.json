@@ -1,6 +1,6 @@
 {
     "name": "react-native-nitro-buffer",
-    "version": "0.0.3",
+    "version": "0.0.4",
     "description": "Node.js compatible buffer module for React Native",
     "main": "lib/index.js",
     "module": "lib/index.js",
@@ -30,7 +30,6 @@
         "@types/node": "^18.19.130",
         "@types/react": "*",
         "jest": "^29.0.0",
-        "react-native-nitro-modules": "*",
         "ts-jest": "^29.0.0",
         "typescript": "^5.0.0"
     },

@@ -2,10 +2,16 @@
 import { Buffer } from './Buffer'
 
 export function atob(data: string): string {
+    if (typeof global.atob === 'function') {
+        return global.atob(data)
+    }
     return Buffer.from(data, 'base64').toString('binary')
 }
 
 export function btoa(data: string): string {
+    if (typeof global.btoa === 'function') {
+        return global.btoa(data)
+    }
     return Buffer.from(data, 'binary').toString('base64')
 }
 

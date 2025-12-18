@@ -14,23 +14,43 @@ A high-performance, Node.js compatible `Buffer` implementation for React Native,
 
 `react-native-nitro-buffer` is significantly faster than other Buffer implementations for React Native.
 
-**Benchmark Results (1MB Buffer operations):**
+### Device: iPad Air 5 (M1) - Physical Device
 
 | Operation | Nitro Buffer | Competitor (Craftz) | Improvement |
 |:---|:---:|:---:|:---:|
-| `fill(0)` | **0.019ms** | 10.36ms | **~545x 🚀** |
-| `write(utf8)` | **2.53ms** | 212.42ms | **~84x 🚀** |
-| `toString(utf8)` | **0.25ms** | 170.72ms | **~691x 🚀** |
-| `toString(base64)` | **0.68ms** | 3.37ms | **~5x 🚀** |
-| `from(base64)` | **1.37ms** | 146.70ms | **~107x 🚀** |
-| `toString(hex)` | **4.86ms** | 56.77ms | **~11.7x 🚀** |
-| `from(hex)` | **11.05ms** | 136.64ms | **~12.4x 🚀** |
-| `alloc(1MB)` | 0.39ms | 0.09ms | 0.23x |
+| `fill(0)` | **0.019ms** | 10.37ms | **~545x 🚀** |
+| `write(utf8)` | **2.47ms** | 212.04ms | **~85x 🚀** |
+| `toString(utf8)` | **0.89ms** | 169.16ms | **~190x 🚀** |
+| `toString(base64)` | **0.69ms** | 3.40ms | **~4.9x 🚀** |
+| `from(base64)` | **1.40ms** | 146.56ms | **~104x 🚀** |
+| `toString(hex)` | **4.85ms** | 57.34ms | **~11.8x 🚀** |
+| `from(hex)` | **11.06ms** | 138.04ms | **~12.5x 🚀** |
+| `btoa(1MB)` | **3.00ms** | 45.90ms | **~15.3x 🚀** |
+| `atob(1MB)` | **5.12ms** | 149.73ms | **~29.2x 🚀** |
+| `alloc(1MB)` | 0.33ms | 0.09ms | 0.27x |
 
-*> Benchmarks ran on iPad Air 5 (M1), averaging 50 iterations.*
+### Device: iPhone 16 Pro Simulator (Mac mini M4)
+
+| Operation | Nitro Buffer | Competitor (Craftz) | Improvement |
+|:---|:---:|:---:|:---:|
+| `fill(0)` | **0.015ms** | 13.78ms | **~918x 🚀** |
+| `write(utf8)` | **4.27ms** | 163.46ms | **~38x 🚀** |
+| `toString(utf8)` | **0.93ms** | 141.56ms | **~152x 🚀** |
+| `toString(base64)` | **1.71ms** | 4.71ms | **~3x 🚀** |
+| `from(base64)` | **16.45ms** | 104.67ms | **~6x 🚀** |
+| `toString(hex)` | **4.89ms** | 43.46ms | **~9x 🚀** |
+| `from(hex)` | **17.93ms** | 95.00ms | **~5x 🚀** |
+| `btoa(1MB)` | **1.13ms** | 34.87ms | **~31x 🚀** |
+| `atob(1MB)` | **2.18ms** | 91.41ms | **~42x 🚀** |
+| `alloc(1MB)` | 0.18ms | 0.03ms | 0.16x |
+
+*> Benchmarks averaged over 50 iterations on 1MB Buffer operations.*
 
 > [!NOTE]
-> **About `alloc` Performance**: The slight difference in allocation time (~0.3ms) is due to the overhead of initializing the ES6 Class structure (`Object.setPrototypeOf`), which provides a cleaner and safer type inheritance model compared to the functional mixin approach. This one-time initialization cost is negligible compared to the massive **10x - 700x** performance gains in actual Buffer operations.
+> **About `alloc` Performance**: The slight difference in allocation time (~0.3ms) is due to the overhead of initializing the ES6 Class structure (`Object.setPrototypeOf`), which provides a cleaner and safer type inheritance model compared to the functional mixin approach. This one-time initialization cost is negligible compared to the massive **5x - 550x** performance gains in actual Buffer operations.
+
+> [!TIP]
+> **`atob`/`btoa` Optimization**: In modern React Native environments (Hermes), `global.atob` and `global.btoa` are natively implemented and highly optimized. `react-native-nitro-buffer` automatically detects and uses these native implementations if available, ensuring your app runs at peak performance while maintaining Node.js utility compatibility.
 
 ## 📦 Installation
 
