@@ -5,7 +5,7 @@
 #include <iostream>
 #include <vector>
 
-namespace margelo::nitro::nitro_buffer {
+namespace margelo::nitro::buffer {
 
 static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -702,4 +702,4 @@ void HybridNitroBuffer::fill(const std::shared_ptr<ArrayBuffer> &buffer,
   memset(data + start, (int)value, actualFill);
 }
 
-} // namespace margelo::nitro::nitro_buffer
+} // namespace margelo::nitro::buffer

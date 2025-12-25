@@ -1,12 +1,13 @@
 {
     "name": "react-native-nitro-buffer",
-    "version": "0.0.4",
-    "description": "Node.js compatible buffer module for React Native",
+    "version": "0.0.11",
+    "description": "The fastest, 100% Node.js-compatible Buffer implementation for React Native, powered by Nitro Modules and C++.",
     "main": "lib/index.js",
     "module": "lib/index.js",
     "types": "lib/index.d.ts",
+    "react-native": "src/index.ts",
     "scripts": {
-        "build": "tsc",
+        "build": "npx nitrogen@0.32.0 && tsc",
         "test": "jest",
         "prepublishOnly": "npm run build"
     },
@@ -23,18 +24,16 @@
     "peerDependencies": {
         "react": "*",
         "react-native": "*",
-        "react-native-nitro-modules": "*"
+        "react-native-nitro-modules": "^0.32.0"
     },
     "devDependencies": {
         "@types/jest": "^30.0.0",
         "@types/node": "^18.19.130",
         "@types/react": "*",
         "jest": "^29.0.0",
+        "react-native-nitro-modules": "^0.32.0",
         "ts-jest": "^29.0.0",
         "typescript": "^5.0.0"
-    },
-    "dependencies": {
-        "react-native-nitro-modules": "*"
     },
     "packageManager": "yarn@4.12.0",
     "files": [

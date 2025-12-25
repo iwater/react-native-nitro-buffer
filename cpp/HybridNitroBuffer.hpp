@@ -2,7 +2,7 @@
 #include "HybridNitroBufferSpec.hpp"
 #include <NitroModules/ArrayBuffer.hpp>
 
-namespace margelo::nitro::nitro_buffer {
+namespace margelo::nitro::buffer {
 
 class HybridNitroBuffer : public HybridNitroBufferSpec {
 public:
@@ -41,4 +41,4 @@ public:
                   double length) override;
 };
 
-} // namespace margelo::nitro::nitro_buffer
+} // namespace margelo::nitro::buffer

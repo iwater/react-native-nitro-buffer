@@ -1,14 +1,14 @@
 {
     "$schema": "https://nitro.margelo.com/nitro.schema.json",
     "cxxNamespace": [
-        "nitro_buffer"
+        "buffer"
     ],
     "ios": {
         "iosModuleName": "NitroBuffer"
     },
     "android": {
         "androidNamespace": [
-            "nitro_buffer"
+            "buffer"
         ],
         "androidCxxLibName": "NitroBuffer"
     },
