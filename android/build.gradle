@@ -12,6 +12,7 @@ def getExtOrDefault(name, defaultValue) {
 
 android {
   namespace "com.margelo.nitro.buffer"
+  ndkVersion getExtOrDefault("ndkVersion", "27.1.12297006")
   compileSdkVersion getExtOrDefault("compileSdkVersion", 34)
 
   defaultConfig {

@@ -1,6 +1,6 @@
 android/build
 android/.cxx
-android/.gradle
+.gradle
 ios/build
 ios/DerivedData
 *.tgz
