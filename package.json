@@ -1,7 +1,8 @@
 {
     "name": "react-native-nitro-buffer",
-    "version": "0.0.12",
+    "version": "0.0.14",
     "description": "The fastest, 100% Node.js-compatible Buffer implementation for React Native, powered by Nitro Modules and C++.",
+    "type": "module",
     "main": "lib/index.js",
     "module": "lib/index.js",
     "types": "lib/index.d.ts",
