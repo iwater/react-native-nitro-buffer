@@ -6,12 +6,12 @@ Pod::Spec.new do |s|
   s.name         = "react-native-nitro-buffer"
   s.version      = package["version"]
   s.summary      = package["description"]
-  s.homepage     = "https://github.com/iwater/rn-http-server"
+  s.homepage     = "https://github.com/iwater/react-native-nitro-buffer"
   s.license      = package["license"]
   s.authors      = package["author"]
-  
+
   s.platform     = :ios, "13.0"
-  s.source       = { :git => "https://github.com/iwater/rn-http-server.git", :tag => "v#{s.version}" }
+  s.source       = { :git => "https://github.com/iwater/react-native-nitro-buffer.git", :tag => "v#{s.version}" }
   
   s.source_files = [
     "ios/**/*.{h,m,mm,swift}",

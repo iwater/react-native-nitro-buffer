@@ -5,7 +5,7 @@ A high-performance, Node.js compatible `Buffer` implementation for React Native,
 ## 🚀 Features
 
 *   **⚡️ Blazing Fast**: Implemented in C++ using Nitro Modules for maximum performance.
-*   **✅ Node.js Compatible**: Drop-in replacement for the standard Node.js `Buffer` API.
+*   **✅ Node.js-style Buffer API**: Covers the core `Buffer` surface used in React Native apps, with parity tests against Node.js.
 *   **🔒 Type Safe**: Written in TypeScript with full type definitions.
 *   **📦 Zero Dependencies**: Lightweight and efficient.
 *   **📱 Cross Platform**: Works flawlessly on iOS and Android.
@@ -88,14 +88,45 @@ console.log(base64); // SGVsbG8gV29ybGQ=
 const decoded = Buffer.from(base64, 'base64');
 console.log(decoded.toString()); // Hello World
 
+const base64url = Buffer.from('hello world').toString('base64url');
+console.log(base64url); // aGVsbG8gd29ybGQ
+
+const utf16 = Buffer.from('foo', 'utf16le');
+console.log(utf16.toString('hex')); // 66006f006f00
+
 // 4. Binary Manipulation
 const buf2 = Buffer.allocUnsafe(4);
 buf2.writeUInt8(0x12, 0); // (Note: typed array methods available via standard Uint8Array API)
 ```
 
+## 🧪 Testing
+
+This repository validates compatibility in two layers:
+
+*   **Node parity tests**: Root-level Jest tests compare behavior against `node:buffer`.
+*   **Real React Native smoke tests**: The [`example/`](./example) app runs the real Nitro-backed implementation, and Maestro verifies the screen state on a simulator / emulator.
+
+Root verification:
+
+```bash
+yarn test
+yarn build
+```
+
+Real app verification:
+
+```bash
+cd example
+yarn start --reset-cache
+yarn ios
+MAESTRO_DEVICE=<simulator-id> yarn test:e2e
+```
+
+For full setup details, see [`example/README.md`](./example/README.md).
+
 ## 🧩 API Support
 
-This library achieves **100% API compatibility** with Node.js `Buffer`.
+This library targets the standard Node.js `Buffer` API and is validated with Node parity tests plus a real React Native example app.
 
 ### Static Methods
 *   `Buffer.alloc(size, fill, encoding)`
@@ -148,16 +179,15 @@ This library achieves **100% API compatibility** with Node.js `Buffer`.
 
 ### `toString('ascii')` Behavior
 
-When decoding binary data with non-ASCII bytes (0x80-0xFF), `react-native-nitro-buffer` follows the **Node.js standard** by replacing invalid bytes with the Unicode replacement character (`U+FFFD`, displayed as `�`).
+When decoding binary data with non-ASCII bytes (0x80-0xFF), `react-native-nitro-buffer` follows the **Node.js behavior** by clearing the high bit of each byte.
 
 ```javascript
 const buf = Buffer.from([0x48, 0x69, 0x80, 0xFF, 0x21]); // "Hi" + invalid bytes + "!"
 buf.toString('ascii');
-// Nitro (Node.js compatible): "Hi��!" (length: 5)
-// @craftzdog/react-native-buffer: "Hi!" (length: 5) - incorrectly drops invalid bytes
+// Nitro (Node.js compatible): "Hi\u0000\u007f!"
 ```
 
-This ensures consistent behavior with Node.js when handling binary protocols like WebSocket messages containing mixed text and binary data (e.g., Microsoft TTS audio streams).
+This matches Node.js semantics for ASCII decoding and avoids silently dropping bytes.
 
 ## 📄 License
 

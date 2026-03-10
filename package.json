@@ -8,7 +8,7 @@
     "types": "lib/index.d.ts",
     "react-native": "src/index.ts",
     "scripts": {
-        "build": "npx nitrogen@0.32.0 && tsc",
+        "build": "nitrogen && tsc",
         "test": "jest",
         "prepublishOnly": "npm run build"
     },
@@ -22,17 +22,26 @@
     ],
     "author": "iwater <iwater@gmail.com>",
     "license": "ISC",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/iwater/react-native-nitro-buffer.git"
+    },
+    "homepage": "https://github.com/iwater/react-native-nitro-buffer#readme",
+    "bugs": {
+        "url": "https://github.com/iwater/react-native-nitro-buffer/issues"
+    },
     "peerDependencies": {
         "react": "*",
         "react-native": "*",
-        "react-native-nitro-modules": "^0.32.0"
+        "react-native-nitro-modules": "^0.35.0"
     },
     "devDependencies": {
         "@types/jest": "^30.0.0",
         "@types/node": "^18.19.130",
         "@types/react": "*",
         "jest": "^29.0.0",
-        "react-native-nitro-modules": "^0.32.0",
+        "nitrogen": "^0.35.0",
+        "react-native-nitro-modules": "^0.35.0",
         "ts-jest": "^29.0.0",
         "typescript": "^5.0.0"
     },
@@ -44,6 +53,7 @@
         "ios/",
         "android/",
         "nitrogen/",
-        "*.podspec"
+        "*.podspec",
+        "nitro.json"
     ]
 }

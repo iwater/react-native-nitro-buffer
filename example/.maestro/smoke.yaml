@@ -1,0 +1,21 @@
+appId: com.hoo.nitrobufferexample
+name: Example smoke verification stays green
+tags:
+  - smoke
+  - native
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: verification-screen
+    timeout: 15000
+- assertVisible:
+    id: refresh-button
+- assertVisible: "PASS [1-9][0-9]*"
+- assertVisible: "FAIL 0"
+- assertNotVisible:
+    text: "^FAIL$"
+- assertVisible: utf8-roundtrip
+- tapOn:
+    id: refresh-button
+- assertVisible: "FAIL 0"

@@ -16,5 +16,9 @@
         "NitroBuffer": {
             "cpp": "HybridNitroBuffer"
         }
-    }
+    },
+    "ignorePaths": [
+        "node_modules/**",
+        "example/**"
+    ]
 }

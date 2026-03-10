@@ -4,6 +4,130 @@ import type { NitroBuffer } from './NitroBuffer.nitro'
 // Lazily load the native module
 let _native: NitroBuffer | undefined
 
+const normalizeEncoding = (encoding: string = 'utf8'): string => encoding.toLowerCase()
+
+const isUtf16Encoding = (encoding: string): boolean => {
+    return encoding === 'utf16le' || encoding === 'utf-16le' || encoding === 'ucs2' || encoding === 'ucs-2'
+}
+
+const isSingleByteEncoding = (encoding: string): boolean => {
+    return encoding === 'ascii' || encoding === 'latin1' || encoding === 'binary'
+}
+
+const normalizeBase64Url = (value: string): string => {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+    const remainder = normalized.length % 4
+
+    if (remainder === 0) return normalized
+    if (remainder === 2) return normalized + '=='
+    if (remainder === 3) return normalized + '='
+    return normalized
+}
+
+const toBase64Url = (value: string): string => {
+    return value.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+const byteLengthString = (input: string, encoding: string): number => {
+    const normalized = normalizeEncoding(encoding)
+
+    if (normalized === 'base64url') {
+        return getNative().byteLength(normalizeBase64Url(input), 'base64')
+    }
+    if (isUtf16Encoding(normalized)) {
+        return input.length * 2
+    }
+    if (isSingleByteEncoding(normalized)) {
+        return input.length
+    }
+
+    return getNative().byteLength(input, normalized)
+}
+
+const writeSingleByteString = (
+    target: Uint8Array,
+    input: string,
+    offset: number,
+    length: number
+): number => {
+    if (offset >= target.length || length <= 0) return 0
+
+    const actualWrite = Math.min(length, target.length - offset, input.length)
+    for (let i = 0; i < actualWrite; i++) {
+        target[offset + i] = input.charCodeAt(i) & 0xff
+    }
+    return actualWrite
+}
+
+const writeUtf16leString = (
+    target: Uint8Array,
+    input: string,
+    offset: number,
+    length: number
+): number => {
+    if (offset >= target.length || length < 2) return 0
+
+    const limit = Math.min(length, target.length - offset)
+    let written = 0
+
+    for (let i = 0; i < input.length && written + 1 < limit; i++) {
+        const codeUnit = input.charCodeAt(i)
+        target[offset + written] = codeUnit & 0xff
+        target[offset + written + 1] = codeUnit >>> 8
+        written += 2
+    }
+
+    return written
+}
+
+const writeStringToBuffer = (
+    target: Buffer,
+    input: string,
+    offset: number,
+    length: number,
+    encoding: string
+): number => {
+    const normalized = normalizeEncoding(encoding)
+
+    if (normalized === 'base64url') {
+        return getNative().write(
+            target.buffer as ArrayBuffer,
+            normalizeBase64Url(input),
+            target.byteOffset + offset,
+            length,
+            'base64'
+        )
+    }
+    if (isUtf16Encoding(normalized)) {
+        return writeUtf16leString(target, input, offset, length)
+    }
+    if (isSingleByteEncoding(normalized)) {
+        return writeSingleByteString(target, input, offset, length)
+    }
+
+    return getNative().write(target.buffer as ArrayBuffer, input, target.byteOffset + offset, length, normalized)
+}
+
+const decodeAscii = (bytes: Uint8Array): string => {
+    const chars = new Array<string>(bytes.length)
+    for (let i = 0; i < bytes.length; i++) {
+        chars[i] = String.fromCharCode(bytes[i] & 0x7f)
+    }
+    return chars.join('')
+}
+
+const decodeUtf16le = (bytes: Uint8Array): string => {
+    const codeUnitCount = Math.floor(bytes.length / 2)
+    const chars = new Array<string>(codeUnitCount)
+
+    for (let i = 0; i < codeUnitCount; i++) {
+        const offset = i * 2
+        chars[i] = String.fromCharCode(bytes[offset] | (bytes[offset + 1] << 8))
+    }
+
+    return chars.join('')
+}
+
 function getNative(): NitroBuffer {
     if (!_native) {
         _native = NitroModules.createHybridObject<NitroBuffer>('NitroBuffer')
@@ -23,10 +147,10 @@ export class Buffer extends Uint8Array {
         if (typeof arg === 'number') {
             super(arg)
         } else if (typeof arg === 'string') {
-            const encoding = encodingOrOffset || 'utf8'
-            const len = getNative().byteLength(arg, encoding)
+            const encoding = normalizeEncoding(encodingOrOffset || 'utf8')
+            const len = byteLengthString(arg, encoding)
             super(len)
-            getNative().write(this.buffer as ArrayBuffer, arg, 0, len, encoding)
+            writeStringToBuffer(this, arg, 0, len, encoding)
         } else if (arg instanceof Uint8Array) {
             super(arg)
         } else if (arg instanceof ArrayBuffer) {
@@ -46,8 +170,21 @@ export class Buffer extends Uint8Array {
     }
 
     static from(value: any, encodingOrOffset?: any, length?: any): Buffer {
-        if (typeof value === 'string') {
-            return new Buffer(value, encodingOrOffset)
+        if (typeof value === 'string' || value instanceof String) {
+            return new Buffer(String(value), encodingOrOffset)
+        }
+        if (value != null && typeof value === 'object' && typeof value[Symbol.toPrimitive] === 'function') {
+            const primitive = value[Symbol.toPrimitive]('string')
+            if (typeof primitive === 'string') {
+                return new Buffer(primitive, encodingOrOffset)
+            }
+        }
+        if (ArrayBuffer.isView(value) && !(value instanceof Uint8Array)) {
+            const arrayLikeValue = value as unknown as ArrayLike<number>
+            if (typeof arrayLikeValue.length === 'number') {
+                return new Buffer(Uint8Array.from(Array.from(arrayLikeValue, (item) => Number(item) & 0xff)).buffer)
+            }
+            return new Buffer(value.buffer as ArrayBuffer, value.byteOffset, value.byteLength)
         }
         if (value instanceof Uint8Array) {
             // Copy
@@ -93,8 +230,17 @@ export class Buffer extends Uint8Array {
         return Buffer.allocUnsafe(size)
     }
 
-    static byteLength(string: string, encoding: string = 'utf8'): number {
-        return getNative().byteLength(string, encoding)
+    static byteLength(input: any, encoding: string = 'utf8'): number {
+        if (input instanceof ArrayBuffer) {
+            return input.byteLength
+        }
+        if (ArrayBuffer.isView(input)) {
+            return input.byteLength
+        }
+        if (typeof input === 'string' || input instanceof String) {
+            return byteLengthString(String(input), encoding)
+        }
+        return getNative().byteLength(input, normalizeEncoding(encoding))
     }
 
     static isBuffer(obj: any): obj is Buffer {
@@ -112,13 +258,26 @@ export class Buffer extends Uint8Array {
     }
 
     static copyBytesFrom(view: ArrayBufferView, offset?: number, length?: number): Buffer {
+        const bytesPerElement = 'BYTES_PER_ELEMENT' in view ? (view as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1 : 1
+        const arrayLikeView = view as unknown as ArrayLike<unknown>
+        const elementLength = 'length' in view && typeof arrayLikeView.length === 'number'
+            ? arrayLikeView.length
+            : view.byteLength
+
         if (offset === undefined) offset = 0
-        if (length === undefined) length = view.byteLength - offset
-        if (offset < 0 || length < 0 || offset + length > view.byteLength) {
+        if (length === undefined) length = elementLength - offset
+        if (offset < 0 || length < 0) {
             throw new RangeError('offset or length out of bounds')
         }
-        const buf = Buffer.allocUnsafe(length)
-        const src = new Uint8Array(view.buffer, view.byteOffset + offset, length)
+        if (offset >= elementLength) {
+            return Buffer.allocUnsafe(0)
+        }
+
+        const safeLength = Math.min(length, elementLength - offset)
+        const byteOffset = view.byteOffset + offset * bytesPerElement
+        const byteLength = safeLength * bytesPerElement
+        const buf = Buffer.allocUnsafe(byteLength)
+        const src = new Uint8Array(view.buffer, byteOffset, byteLength)
         buf.set(src)
         return buf
     }
@@ -130,8 +289,12 @@ export class Buffer extends Uint8Array {
         const buf = Buffer.allocUnsafe(totalLength!)
         let offset = 0
         for (const item of list) {
-            buf.set(item, offset)
-            offset += item.length
+            const remaining = totalLength! - offset
+            if (remaining <= 0) break
+
+            const chunk = item.length > remaining ? item.subarray(0, remaining) : item
+            buf.set(chunk, offset)
+            offset += chunk.length
         }
         return buf
     }
@@ -153,17 +316,30 @@ export class Buffer extends Uint8Array {
             encoding = 'utf8'
         }
 
-        return getNative().write(this.buffer as ArrayBuffer, string, this.byteOffset + (offset as number), length as number, encoding as string)
+        return writeStringToBuffer(this, string, offset as number, length as number, encoding as string)
     }
 
     toString(encoding?: string, start?: number, end?: number): string {
         if (encoding === undefined) encoding = 'utf8'
+        encoding = normalizeEncoding(encoding)
         if (start === undefined) start = 0
         if (end === undefined) end = this.length
 
         if (start < 0) start = 0
         if (end > this.length) end = this.length
         if (start >= end) return ''
+
+        const bytes = new Uint8Array(this.buffer, this.byteOffset + start, end - start)
+
+        if (encoding === 'ascii') {
+            return decodeAscii(bytes)
+        }
+        if (encoding === 'base64url') {
+            return toBase64Url(getNative().decode(this.buffer as ArrayBuffer, this.byteOffset + start, end - start, 'base64'))
+        }
+        if (isUtf16Encoding(encoding)) {
+            return decodeUtf16le(bytes)
+        }
 
         return getNative().decode(this.buffer as ArrayBuffer, this.byteOffset + start, end - start, encoding)
     }
@@ -197,15 +373,15 @@ export class Buffer extends Uint8Array {
             // We search in [0, byteOffset + needle.length]. 
             // The match must start at <= byteOffset.
             // So the match must be fully contained in [0, byteOffset + needle.length].
-            return getNative().lastIndexOfBuffer(this.buffer as ArrayBuffer, needle.buffer as ArrayBuffer, 0, byteOffset + needle.length)
+            return getNative().lastIndexOfBuffer(this.buffer as ArrayBuffer, needle.buffer as ArrayBuffer, 0, Math.min(this.length, byteOffset + needle.length))
         }
         if (value instanceof Uint8Array) {
             if (value.length === 0) return -1
-            return getNative().lastIndexOfBuffer(this.buffer as ArrayBuffer, value.buffer as ArrayBuffer, 0, byteOffset + value.length)
+            return getNative().lastIndexOfBuffer(this.buffer as ArrayBuffer, value.buffer as ArrayBuffer, 0, Math.min(this.length, byteOffset + value.length))
         }
         if (typeof value === 'number') {
             // Search in [0, byteOffset + 1]. The last byte checked is at byteOffset.
-            return getNative().lastIndexOfByte(this.buffer as ArrayBuffer, value, 0, byteOffset + 1)
+            return getNative().lastIndexOfByte(this.buffer as ArrayBuffer, value, 0, Math.min(this.length, byteOffset + 1))
         }
         throw new TypeError('"value" argument must be string, number or Buffer')
     }
@@ -631,11 +807,14 @@ export class Buffer extends Uint8Array {
             case 'utf-8':
             case 'hex':
             case 'base64':
+            case 'base64url':
             case 'binary':
             case 'latin1':
             case 'ascii':
             case 'utf16le':
+            case 'utf-16le':
             case 'ucs2':
+            case 'ucs-2':
                 return true
             default:
                 return false
@@ -697,4 +876,3 @@ export class Buffer extends Uint8Array {
         return len
     }
 }
-
