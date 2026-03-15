@@ -1,6 +1,6 @@
 {
     "name": "react-native-nitro-buffer",
-    "version": "0.0.15",
+    "version": "0.2.0",
     "description": "The fastest, 100% Node.js-compatible Buffer implementation for React Native, powered by Nitro Modules and C++.",
     "type": "module",
     "main": "lib/index.js",
@@ -8,7 +8,7 @@
     "types": "lib/index.d.ts",
     "react-native": "src/index.ts",
     "scripts": {
-        "build": "npx nitrogen@0.32.0 && tsc",
+        "build": "npx nitrogen@0.35.0 && tsc",
         "test": "jest",
         "prepublishOnly": "npm run build"
     },
@@ -25,14 +25,14 @@
     "peerDependencies": {
         "react": "*",
         "react-native": "*",
-        "react-native-nitro-modules": "^0.32.0"
+        "react-native-nitro-modules": "^0.35.0"
     },
     "devDependencies": {
         "@types/jest": "^30.0.0",
         "@types/node": "^18.19.130",
         "@types/react": "*",
         "jest": "^29.0.0",
-        "react-native-nitro-modules": "^0.32.0",
+        "react-native-nitro-modules": "^0.35.0",
         "ts-jest": "^29.0.0",
         "typescript": "^5.0.0"
     },
