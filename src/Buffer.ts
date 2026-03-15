@@ -23,7 +23,7 @@ export class Buffer extends Uint8Array {
         if (typeof arg === 'number') {
             super(arg)
         } else if (typeof arg === 'string') {
-            const encoding = encodingOrOffset || 'utf8'
+            const encoding = Buffer._normalizeEncoding(encodingOrOffset || 'utf8')
             const len = getNative().byteLength(arg, encoding)
             super(len)
             getNative().write(this.buffer as ArrayBuffer, arg, 0, len, encoding)
@@ -94,7 +94,7 @@ export class Buffer extends Uint8Array {
     }
 
     static byteLength(string: string, encoding: string = 'utf8'): number {
-        return getNative().byteLength(string, encoding)
+        return getNative().byteLength(string, Buffer._normalizeEncoding(encoding))
     }
 
     static isBuffer(obj: any): obj is Buffer {
@@ -153,7 +153,7 @@ export class Buffer extends Uint8Array {
             encoding = 'utf8'
         }
 
-        return getNative().write(this.buffer as ArrayBuffer, string, this.byteOffset + (offset as number), length as number, encoding as string)
+        return getNative().write(this.buffer as ArrayBuffer, string, this.byteOffset + (offset as number), length as number, Buffer._normalizeEncoding(encoding as string))
     }
 
     toString(encoding?: string, start?: number, end?: number): string {
@@ -165,7 +165,7 @@ export class Buffer extends Uint8Array {
         if (end > this.length) end = this.length
         if (start >= end) return ''
 
-        return getNative().decode(this.buffer as ArrayBuffer, this.byteOffset + start, end - start, encoding)
+        return getNative().decode(this.buffer as ArrayBuffer, this.byteOffset + start, end - start, Buffer._normalizeEncoding(encoding))
     }
 
     indexOf(value: string | number | Uint8Array, byteOffset?: number, encoding?: string): number {
@@ -210,7 +210,7 @@ export class Buffer extends Uint8Array {
         throw new TypeError('"value" argument must be string, number or Buffer')
     }
 
-    includes(value: string | number | Buffer, byteOffset?: number, encoding?: string): boolean {
+    includes(value: string | number | Buffer | Uint8Array, byteOffset?: number, encoding?: string): boolean {
         return this.indexOf(value, byteOffset, encoding) !== -1
     }
 
@@ -626,19 +626,67 @@ export class Buffer extends Uint8Array {
     }
 
     static isEncoding(encoding: string): boolean {
+        if (typeof encoding !== 'string') return false
+
+        // Fast path for common lowercase encodings (avoids toLowerCase() allocation)
+        switch (encoding) {
+            case 'utf8':
+            case 'utf-8':
+            case 'hex':
+            case 'base64':
+            case 'latin1':
+            case 'binary':
+            case 'ascii':
+            case 'utf16le':
+            case 'ucs2':
+            case 'base64url':
+                return true
+        }
+
+        // Fallback for case-insensitive and rarer aliases
         switch (encoding.toLowerCase()) {
             case 'utf8':
             case 'utf-8':
             case 'hex':
             case 'base64':
-            case 'binary':
+            case 'base64url':
             case 'latin1':
+            case 'binary':
             case 'ascii':
             case 'utf16le':
+            case 'utf-16le':
             case 'ucs2':
+            case 'ucs-2':
                 return true
             default:
                 return false
+        }
+    }
+
+    private static _normalizeEncoding(enc: string): string {
+        const encoding = enc.toLowerCase()
+        switch (encoding) {
+            case 'utf8':
+            case 'utf-8':
+                return 'utf8'
+            case 'ucs2':
+            case 'ucs-2':
+            case 'utf16le':
+            case 'utf-16le':
+                return 'utf16le'
+            case 'latin1':
+            case 'binary':
+                return 'latin1'
+            case 'base64':
+                return 'base64'
+            case 'base64url':
+                return 'base64url'
+            case 'hex':
+                return 'hex'
+            case 'ascii':
+                return 'ascii'
+            default:
+                return encoding
         }
     }
 

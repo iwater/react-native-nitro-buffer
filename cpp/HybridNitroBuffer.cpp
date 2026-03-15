@@ -9,21 +9,20 @@ namespace margelo::nitro::buffer {
 
 static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static const char base64_url_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 static inline bool is_base64(unsigned char c) {
-  return (isalnum(c) || (c == '+') || (c == '/'));
+  return (isalnum(c) || (c == '+') || (c == '/') || (c == '-') || (c == '_'));
 }
 
 std::string base64_encode(const unsigned char *bytes_to_encode,
-                          unsigned int in_len) {
+                          unsigned int in_len, bool url_safe = false) {
+  const char *chars = url_safe ? base64_url_chars : base64_chars;
   std::string ret;
-  size_t output_len = 4 * ((in_len + 2) / 3);
-  ret.resize(output_len);
+  ret.reserve((in_len * 4 + 2) / 3);
 
   size_t i = 0;
-  size_t j = 0;
-  char *out = &ret[0];
-
   while (i + 2 < in_len) {
     uint32_t octet_a = bytes_to_encode[i++];
     uint32_t octet_b = bytes_to_encode[i++];
@@ -31,30 +30,30 @@ std::string base64_encode(const unsigned char *bytes_to_encode,
 
     uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
 
-    out[j++] = base64_chars[(triple >> 18) & 0x3F];
-    out[j++] = base64_chars[(triple >> 12) & 0x3F];
-    out[j++] = base64_chars[(triple >> 6) & 0x3F];
-    out[j++] = base64_chars[triple & 0x3F];
+    ret.push_back(chars[(triple >> 18) & 0x3F]);
+    ret.push_back(chars[(triple >> 12) & 0x3F]);
+    ret.push_back(chars[(triple >> 6) & 0x3F]);
+    ret.push_back(chars[triple & 0x3F]);
   }
 
   if (i < in_len) {
     uint32_t octet_a = bytes_to_encode[i++];
     uint32_t octet_b = (i < in_len) ? bytes_to_encode[i++] : 0;
-    uint32_t octet_c = 0; // Always 0 for the last one if we are here
+    uint32_t triple = (octet_a << 16) + (octet_b << 8);
 
-    uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
-
-    out[j++] = base64_chars[(triple >> 18) & 0x3F];
-    out[j++] = base64_chars[(triple >> 12) & 0x3F];
+    ret.push_back(chars[(triple >> 18) & 0x3F]);
+    ret.push_back(chars[(triple >> 12) & 0x3F]);
 
     if (in_len % 3 == 1) {
-      // One byte remaining, two paddings
-      out[j++] = '=';
-      out[j++] = '=';
+      if (!url_safe) {
+        ret.push_back('=');
+        ret.push_back('=');
+      }
     } else {
-      // Two bytes remaining, one padding
-      out[j++] = base64_chars[(triple >> 6) & 0x3F];
-      out[j++] = '=';
+      ret.push_back(chars[(triple >> 6) & 0x3F]);
+      if (!url_safe) {
+        ret.push_back('=');
+      }
     }
   }
 
@@ -65,10 +64,10 @@ static const unsigned char base64_decode_table[256] = {
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 62,  255,
-    255, 255, 63,  52,  53,  54,  55,  56,  57,  58,  59,  60,  61,  255, 255,
+    62,  255, 63,  52,  53,  54,  55,  56,  57,  58,  59,  60,  61,  255, 255,
     255, 255, 255, 255, 255, 0,   1,   2,   3,   4,   5,   6,   7,   8,   9,
     10,  11,  12,  13,  14,  15,  16,  17,  18,  19,  20,  21,  22,  23,  24,
-    25,  255, 255, 255, 255, 255, 255, 26,  27,  28,  29,  30,  31,  32,  33,
+    25,  255, 255, 255, 255, 63,  255, 26,  27,  28,  29,  30,  31,  32,  33,
     34,  35,  36,  37,  38,  39,  40,  41,  42,  43,  44,  45,  46,  47,  48,
     49,  50,  51,  255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
@@ -159,16 +158,52 @@ double HybridNitroBuffer::byteLength(const std::string &string,
                                      const std::string &encoding) {
   if (encoding == "hex") {
     return (double)(string.length() / 2);
-  } else if (encoding == "base64") {
+  } else if (encoding == "base64" || encoding == "base64url") {
     size_t len = string.length();
     if (len == 0)
       return 0;
+    
+    // For base64url, we might not have padding.
+    // Node.js base64url byteLength: (len * 3) / 4 (floored)
+    if (encoding == "base64url") {
+        // Find actual content length (ignore trailing '=')
+        size_t content_len = len;
+        while (content_len > 0 && string[content_len - 1] == '=') content_len--;
+        return (double)((content_len * 3) / 4);
+    }
+    
     size_t padding = 0;
     if (len > 0 && string[len - 1] == '=')
       padding++;
     if (len > 1 && string[len - 2] == '=')
       padding++;
     return (double)((len * 3) / 4 - padding);
+  } else if (encoding == "utf16le") {
+    // UTF-16 characters are 2 bytes each.
+    // Input string is UTF-8. We need to count Unicode code points.
+    size_t count = 0;
+    size_t i = 0;
+    size_t len = string.length();
+    const char *str = string.c_str();
+    while (i < len) {
+      unsigned char byte = static_cast<unsigned char>(str[i]);
+      size_t seqLen = 0;
+      uint32_t cp = 0;
+      if (byte <= 0x7F) { seqLen = 1; cp = byte; }
+      else if ((byte & 0xE0) == 0xC0) { seqLen = 2; }
+      else if ((byte & 0xF0) == 0xE0) { seqLen = 3; }
+      else if ((byte & 0xF8) == 0xF0) { seqLen = 4; }
+      else { seqLen = 1; }
+      
+      i += seqLen;
+      // If code point > 0xFFFF, it's a surrogate pair (4 bytes in UTF-16, 2 UTF-16 units)
+      // Actually, string.length() in UTF-16 (JavaScript) counts surrogate pairs as 2.
+      // But we are receiving a UTF-8 std::string.
+      // A surrogate pair in UTF-8 is 4 bytes.
+      if (seqLen == 4) count += 2;
+      else count += 1;
+    }
+    return (double)(count * 2);
   } else if (encoding == "binary" || encoding == "latin1") {
     // Each character in the original string (0-255) maps to one byte.
     // The input 'string' is UTF-8 encoded. We count Unicode code points.
@@ -226,11 +261,49 @@ double HybridNitroBuffer::write(const std::shared_ptr<ArrayBuffer> &buffer,
       data[start + i] = byte;
     }
     return (double)actualWrite;
-  } else if (encoding == "base64") {
+  } else if (encoding == "base64" || encoding == "base64url") {
     std::vector<unsigned char> decoded = base64_decode(string);
     size_t actualWrite = std::min(toWrite, decoded.size());
     memcpy(data + start, decoded.data(), actualWrite);
     return (double)actualWrite;
+  } else if (encoding == "utf16le") {
+    size_t written = 0;
+    size_t i = 0;
+    const char *str = string.c_str();
+    size_t utf8Len = string.length();
+    while (i < utf8Len && written + 1 < toWrite) {
+      uint32_t cp = 0;
+      size_t seqLen = 0;
+      unsigned char b1 = static_cast<unsigned char>(str[i]);
+      if (b1 <= 0x7F) { cp = b1; seqLen = 1; }
+      else if ((b1 & 0xE0) == 0xC0 && i + 1 < utf8Len) {
+        cp = ((b1 & 0x1F) << 6) | (static_cast<unsigned char>(str[i+1]) & 0x3F);
+        seqLen = 2;
+      } else if ((b1 & 0xF0) == 0xE0 && i + 2 < utf8Len) {
+        cp = ((b1 & 0x0F) << 12) | ((static_cast<unsigned char>(str[i+1]) & 0x3F) << 6) | (static_cast<unsigned char>(str[i+2]) & 0x3F);
+        seqLen = 3;
+      } else if ((b1 & 0xF8) == 0xF0 && i + 3 < utf8Len) {
+        cp = ((b1 & 0x07) << 18) | ((static_cast<unsigned char>(str[i+1]) & 0x3F) << 12) | ((static_cast<unsigned char>(str[i+2]) & 0x3F) << 6) | (static_cast<unsigned char>(str[i+3]) & 0x3F);
+        seqLen = 4;
+      } else { cp = b1; seqLen = 1; }
+      
+      if (cp <= 0xFFFF) {
+        data[start + written++] = static_cast<uint8_t>(cp & 0xFF);
+        data[start + written++] = static_cast<uint8_t>((cp >> 8) & 0xFF);
+      } else {
+        if (written + 3 < toWrite) {
+          cp -= 0x10000;
+          uint16_t high = 0xD800 | ((cp >> 10) & 0x3FF);
+          uint16_t low = 0xDC00 | (cp & 0x3FF);
+          data[start + written++] = static_cast<uint8_t>(high & 0xFF);
+          data[start + written++] = static_cast<uint8_t>((high >> 8) & 0xFF);
+          data[start + written++] = static_cast<uint8_t>(low & 0xFF);
+          data[start + written++] = static_cast<uint8_t>((low >> 8) & 0xFF);
+        } else break;
+      }
+      i += seqLen;
+    }
+    return (double)written;
   } else if (encoding == "binary" || encoding == "latin1") {
     // Decode UTF-8 string back to raw bytes (0x00-0xFF)
     size_t written = 0;
@@ -514,7 +587,38 @@ HybridNitroBuffer::decode(const std::shared_ptr<ArrayBuffer> &buffer,
     }
     return hex;
   } else if (encoding == "base64") {
-    return base64_encode(data + start, (unsigned int)actualRead);
+    return base64_encode(data + start, (unsigned int)actualRead, false);
+  } else if (encoding == "base64url") {
+    return base64_encode(data + start, (unsigned int)actualRead, true);
+  } else if (encoding == "utf16le") {
+    std::string result;
+    result.reserve(actualRead); 
+    for (size_t i = 0; i + 1 < actualRead; i += 2) {
+      uint16_t unit = data[start + i] | (data[start + i + 1] << 8);
+      if (unit <= 0x7F) {
+        result.push_back(static_cast<char>(unit));
+      } else if (unit <= 0x7FF) {
+        result.push_back(static_cast<char>(0xC0 | (unit >> 6)));
+        result.push_back(static_cast<char>(0x80 | (unit & 0x3F)));
+      } else if (unit >= 0xD800 && unit <= 0xDBFF && i + 3 < actualRead) {
+        uint16_t next = data[start + i + 2] | (data[start + i + 3] << 8);
+        if (next >= 0xDC00 && next <= 0xDFFF) {
+          uint32_t cp = 0x10000 + (((unit & 0x3FF) << 10) | (next & 0x3FF));
+          result.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+          result.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+          result.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+          result.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+          i += 2;
+        } else {
+          result.append(UTF8_REPLACEMENT);
+        }
+      } else {
+        result.push_back(static_cast<char>(0xE0 | (unit >> 12)));
+        result.push_back(static_cast<char>(0x80 | ((unit >> 6) & 0x3F)));
+        result.push_back(static_cast<char>(0x80 | (unit & 0x3F)));
+      }
+    }
+    return result;
   }
 
   // Default: UTF-8 with replacement
