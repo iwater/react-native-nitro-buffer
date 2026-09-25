@@ -14,40 +14,26 @@
 
 `react-native-nitro-buffer` 比 React Native 的其他 Buffer 实现要快得多。
 
-### 设备: iPad Air 5 (M1) - 物理设备
+### 设备: Mac mini M4
 
 | 操作 | Nitro Buffer | 竞品 (Craftz) | 提升幅度 |
 |:---|:---:|:---:|:---:|
-| `fill(0)` | **0.019ms** | 10.37ms | **~545x 🚀** |
-| `write(utf8)` | **2.47ms** | 212.04ms | **~85x 🚀** |
-| `toString(utf8)` | **0.89ms** | 169.16ms | **~190x 🚀** |
-| `toString(base64)` | **0.69ms** | 3.40ms | **~4.9x 🚀** |
-| `from(base64)` | **1.40ms** | 146.56ms | **~104x 🚀** |
-| `toString(hex)` | **4.85ms** | 57.34ms | **~11.8x 🚀** |
-| `from(hex)` | **11.06ms** | 138.04ms | **~12.5x 🚀** |
-| `btoa(1MB)` | **3.00ms** | 45.90ms | **~15.3x 🚀** |
-| `atob(1MB)` | **5.12ms** | 149.73ms | **~29.2x 🚀** |
-| `alloc(1MB)` | 0.33ms | 0.09ms | 0.27x |
-
-### 设备: iPhone 16 Pro 模拟器 (基于 Mac mini M4)
-
-| 操作 | Nitro Buffer | 竞品 (Craftz) | 提升幅度 |
-|:---|:---:|:---:|:---:|
-| `fill(0)` | **0.015ms** | 13.78ms | **~918x 🚀** |
-| `write(utf8)` | **4.27ms** | 163.46ms | **~38x 🚀** |
-| `toString(utf8)` | **0.93ms** | 141.56ms | **~152x 🚀** |
-| `toString(base64)` | **1.71ms** | 4.71ms | **~3x 🚀** |
-| `from(base64)` | **16.45ms** | 104.67ms | **~6x 🚀** |
-| `toString(hex)` | **4.89ms** | 43.46ms | **~9x 🚀** |
-| `from(hex)` | **17.93ms** | 95.00ms | **~5x 🚀** |
-| `btoa(1MB)` | **1.13ms** | 34.87ms | **~31x 🚀** |
-| `atob(1MB)` | **2.18ms** | 91.41ms | **~42x 🚀** |
-| `alloc(1MB)` | 0.18ms | 0.03ms | 0.16x |
+| `fill(0)` | **0.01ms** | 7.38ms | **~715x 🚀** |
+| `write(utf8)` | **4.24ms** | 135.75ms | **~32x 🚀** |
+| `toString(utf8)` | **0.78ms** | 112.75ms | **~144x 🚀** |
+| `toString(base64)` | 0.30ms | 0.30ms | 1.00x |
+| `from(base64)` | **0.35ms** | 82.53ms | **~239x 🚀** |
+| `toString(hex)` | **9.28ms** | 33.66ms | **~3.6x 🚀** |
+| `from(hex)` | **7.66ms** | 78.49ms | **~10x 🚀** |
+| `btoa(1MB)` | **9.62ms** | 133.63ms | **~14x 🚀** |
+| `atob(1MB)` | **4.05ms** | 282.94ms | **~70x 🚀** |
+| `alloc(1MB)` | 0.05ms | **0.02ms** | 0.33x |
 
 *> 基准测试基于 1MB Buffer 操作，取 50 次迭代平均值。*
+*> 测试版本：`react-native-nitro-buffer` v0.3.0 vs `@craftzdog/react-native-buffer` v6.1.2 (底层依赖 `react-native-quick-base64` v3.0.1)，运行于 React Native 0.81.6 (New Architecture)。*
 
 > [!NOTE]
-> **关于 `alloc` 性能**: `alloc` 时间上的微小差异 (~0.3ms) 是由于初始化 ES6 Class 结构 (`Object.setPrototypeOf`) 带来的开销，这相比于函数式混入 (functional mixin) 提供了更清晰和安全的类型继承模型。与实际 Buffer 操作中获得的 **10x - 700x** 巨大性能提升相比，这一一次性的初始化成本可以忽略不计。
+> **关于 `alloc` 性能**: `alloc` 时间上的微小差异 (~0.3ms) 是由于初始化 ES6 Class 结构 (`Object.setPrototypeOf`) 带来的开销，这相比于函数式混入 (functional mixin) 提供了更清晰和安全的类型继承模型。与实际 Buffer 操作中获得的约 **3x - 700x** 巨大性能提升相比，这一一次性的初始化成本可以忽略不计。
 
 > [!TIP]
 > **`atob`/`btoa` 优化**: 在现代 React Native 环境（Hermes）中，`global.atob` 和 `global.btoa` 是原生实现且经过高度优化的。`react-native-nitro-buffer` 会自动检测并优先使用这些原生实现，确保应用在保持 Node.js 工具函数兼容性的同时，拥有极致的性能。
