@@ -417,7 +417,17 @@ static bool isValidUtf8(const uint8_t *data, size_t len) {
   return true;
 }
 
-// Slow path: Decode UTF-8 with replacement for invalid bytes
+// Slow path: Decode UTF-8 with replacement for invalid bytes.
+//
+// Follows the WHATWG Encoding Standard's UTF-8 decoder, which emits exactly ONE
+// U+FFFD per *maximal subpart*: the lead byte plus every continuation byte that
+// was actually consumed, after which the offending byte is re-examined as a
+// potential lead byte.
+//
+// This used to advance only one byte on every error, so a single truncated or
+// broken 3-/4-byte sequence produced one U+FFFD per leftover byte instead of one
+// (e.g. bytes "e4 b8" decoded to "\uFFFD\uFFFD" while Node yields "\uFFFD").
+//
 // Only called when isValidUtf8 returns false
 static std::string decodeUtf8WithReplacementSlow(const uint8_t *data,
                                                  size_t len) {
@@ -435,69 +445,62 @@ static std::string decodeUtf8WithReplacementSlow(const uint8_t *data,
       continue;
     }
 
-    // Invalid leading byte (0x80-0xBF or 0xF8-0xFF)
+    // Invalid leading byte (0x80-0xC1 or 0xF5-0xFF): can never start a sequence,
+    // so it is its own maximal subpart -> one U+FFFD.
     if (byte1 < 0xC2 || byte1 > 0xF4) {
       result.append(UTF8_REPLACEMENT);
       i++;
       continue;
     }
 
-    // 2-byte sequence (0xC2-0xDF)
+    // Expected sequence length, plus the accepted range for the FIRST
+    // continuation byte (the tighter bounds reject overlong forms and surrogates,
+    // matching the spec's lowerBoundary/upperBoundary).
+    size_t need;
+    uint8_t lower = 0x80;
+    uint8_t upper = 0xBF;
     if (byte1 <= 0xDF) {
-      if (i + 1 >= len || (data[i + 1] & 0xC0) != 0x80) {
-        result.append(UTF8_REPLACEMENT);
-        i++;
-        continue;
-      }
-      result.push_back(static_cast<char>(byte1));
-      result.push_back(static_cast<char>(data[i + 1]));
-      i += 2;
-      continue;
+      need = 2; // 2-byte sequence (0xC2-0xDF)
+    } else if (byte1 <= 0xEF) {
+      need = 3; // 3-byte sequence (0xE0-0xEF)
+      if (byte1 == 0xE0)
+        lower = 0xA0; // reject overlong (U+0800 and below)
+      if (byte1 == 0xED)
+        upper = 0x9F; // reject surrogates (U+D800-U+DFFF)
+    } else {
+      need = 4; // 4-byte sequence (0xF0-0xF4)
+      if (byte1 == 0xF0)
+        lower = 0x90; // reject overlong (U+10000 and below)
+      if (byte1 == 0xF4)
+        upper = 0x8F; // reject > U+10FFFF
     }
 
-    // 3-byte sequence (0xE0-0xEF)
-    if (byte1 <= 0xEF) {
-      if (i + 2 >= len) {
-        result.append(UTF8_REPLACEMENT);
-        i++;
-        continue;
-      }
-      uint8_t byte2 = data[i + 1];
-      uint8_t byte3 = data[i + 2];
-      if ((byte2 & 0xC0) != 0x80 || (byte3 & 0xC0) != 0x80 ||
-          (byte1 == 0xE0 && byte2 < 0xA0) || (byte1 == 0xED && byte2 >= 0xA0)) {
-        result.append(UTF8_REPLACEMENT);
-        i++;
-        continue;
-      }
-      result.push_back(static_cast<char>(byte1));
-      result.push_back(static_cast<char>(byte2));
-      result.push_back(static_cast<char>(byte3));
-      i += 3;
-      continue;
+    // Consume the maximal subpart: the lead byte plus as many valid continuation
+    // bytes as are actually present. Stop at end-of-data, or at the first byte
+    // that is not a valid continuation for its position.
+    size_t consumed = 1;
+    while (consumed < need) {
+      size_t j = i + consumed;
+      if (j >= len)
+        break;
+      uint8_t b = data[j];
+      uint8_t lo = (consumed == 1) ? lower : 0x80;
+      uint8_t hi = (consumed == 1) ? upper : 0xBF;
+      if (b < lo || b > hi)
+        break;
+      consumed++;
     }
 
-    // 4-byte sequence (0xF0-0xF4)
-    if (i + 3 >= len) {
+    if (consumed == need) {
+      // Complete, well-formed sequence: copy it verbatim.
+      result.append(reinterpret_cast<const char *>(data + i), need);
+      i += need;
+    } else {
+      // Truncated or ill-formed: a single U+FFFD covers the whole maximal
+      // subpart, and the next byte (if any) is re-examined as a lead byte.
       result.append(UTF8_REPLACEMENT);
-      i++;
-      continue;
+      i += consumed;
     }
-    uint8_t byte2 = data[i + 1];
-    uint8_t byte3 = data[i + 2];
-    uint8_t byte4 = data[i + 3];
-    if ((byte2 & 0xC0) != 0x80 || (byte3 & 0xC0) != 0x80 ||
-        (byte4 & 0xC0) != 0x80 || (byte1 == 0xF0 && byte2 < 0x90) ||
-        (byte1 == 0xF4 && byte2 > 0x8F)) {
-      result.append(UTF8_REPLACEMENT);
-      i++;
-      continue;
-    }
-    result.push_back(static_cast<char>(byte1));
-    result.push_back(static_cast<char>(byte2));
-    result.push_back(static_cast<char>(byte3));
-    result.push_back(static_cast<char>(byte4));
-    i += 4;
   }
 
   return result;
