@@ -1,6 +1,6 @@
 {
     "name": "react-native-nitro-buffer",
-    "version": "0.2.2",
+    "version": "0.3.0",
     "description": "The fastest, 100% Node.js-compatible Buffer implementation for React Native, powered by Nitro Modules and C++.",
     "type": "module",
     "main": "lib/index.js",
@@ -33,7 +33,7 @@
     "peerDependencies": {
         "react": "*",
         "react-native": "*",
-        "react-native-nitro-modules": "^0.35.0"
+        "react-native-nitro-modules": "0.35.0 - 0.37.1"
     },
     "devDependencies": {
         "@types/jest": "^30.0.0",

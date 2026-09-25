@@ -1,6 +1,6 @@
 node_modules
 nitrogen
-package.tgz
+*.tgz
 lib
 .DS_Store
 .git

@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD 20)
 add_library(NitroBuffer SHARED
     OnLoad.cpp
     ../cpp/HybridNitroBuffer.cpp
+    ../cpp/simdutf.cpp
 )
 
 # Force both hash styles (sysv and gnu) for Android loader compatibility

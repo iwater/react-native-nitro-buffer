@@ -1,4 +1,5 @@
 #include "HybridNitroBuffer.hpp"
+#include "simdutf.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -7,132 +8,34 @@
 
 namespace margelo::nitro::buffer {
 
-static const char base64_chars[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-static const char base64_url_chars[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-static inline bool is_base64(unsigned char c) {
-  return (isalnum(c) || (c == '+') || (c == '/') || (c == '-') || (c == '_'));
-}
-
 std::string base64_encode(const unsigned char *bytes_to_encode,
-                          unsigned int in_len, bool url_safe = false) {
-  const char *chars = url_safe ? base64_url_chars : base64_chars;
-  std::string ret;
-  ret.reserve((in_len * 4 + 2) / 3);
-
-  size_t i = 0;
-  while (i + 2 < in_len) {
-    uint32_t octet_a = bytes_to_encode[i++];
-    uint32_t octet_b = bytes_to_encode[i++];
-    uint32_t octet_c = bytes_to_encode[i++];
-
-    uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
-
-    ret.push_back(chars[(triple >> 18) & 0x3F]);
-    ret.push_back(chars[(triple >> 12) & 0x3F]);
-    ret.push_back(chars[(triple >> 6) & 0x3F]);
-    ret.push_back(chars[triple & 0x3F]);
-  }
-
-  if (i < in_len) {
-    uint32_t octet_a = bytes_to_encode[i++];
-    uint32_t octet_b = (i < in_len) ? bytes_to_encode[i++] : 0;
-    uint32_t triple = (octet_a << 16) + (octet_b << 8);
-
-    ret.push_back(chars[(triple >> 18) & 0x3F]);
-    ret.push_back(chars[(triple >> 12) & 0x3F]);
-
-    if (in_len % 3 == 1) {
-      if (!url_safe) {
-        ret.push_back('=');
-        ret.push_back('=');
-      }
-    } else {
-      ret.push_back(chars[(triple >> 6) & 0x3F]);
-      if (!url_safe) {
-        ret.push_back('=');
-      }
-    }
-  }
-
+                          size_t in_len, bool url_safe = false) {
+  if (in_len == 0)
+    return "";
+  auto opts = url_safe ? simdutf::base64_url : simdutf::base64_default;
+  size_t max_len = simdutf::base64_length_from_binary(in_len, opts);
+  std::string ret(max_len, '\0');
+  size_t written = simdutf::binary_to_base64(
+      reinterpret_cast<const char *>(bytes_to_encode), in_len, ret.data(),
+      opts);
+  ret.resize(written);
   return ret;
 }
-// Reverse lookup table for base64 decoding (255 = invalid)
-static const unsigned char base64_decode_table[256] = {
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 62,  255,
-    62,  255, 63,  52,  53,  54,  55,  56,  57,  58,  59,  60,  61,  255, 255,
-    255, 255, 255, 255, 255, 0,   1,   2,   3,   4,   5,   6,   7,   8,   9,
-    10,  11,  12,  13,  14,  15,  16,  17,  18,  19,  20,  21,  22,  23,  24,
-    25,  255, 255, 255, 255, 63,  255, 26,  27,  28,  29,  30,  31,  32,  33,
-    34,  35,  36,  37,  38,  39,  40,  41,  42,  43,  44,  45,  46,  47,  48,
-    49,  50,  51,  255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255};
-
 std::vector<unsigned char> base64_decode(std::string const &encoded_string) {
   size_t in_len = encoded_string.size();
   if (in_len == 0)
     return {};
 
-  // Calculate output size
-  size_t padding = 0;
-  if (in_len > 0 && encoded_string[in_len - 1] == '=')
-    padding++;
-  if (in_len > 1 && encoded_string[in_len - 2] == '=')
-    padding++;
-  size_t output_len = (in_len * 3) / 4 - padding;
-
-  std::vector<unsigned char> ret;
-  ret.reserve(output_len);
-
-  const unsigned char *in =
-      reinterpret_cast<const unsigned char *>(encoded_string.data());
-  size_t i = 0;
-
-  while (i + 3 < in_len) {
-    unsigned char a = base64_decode_table[in[i++]];
-    unsigned char b = base64_decode_table[in[i++]];
-    unsigned char c = base64_decode_table[in[i++]];
-    unsigned char d = base64_decode_table[in[i++]];
-
-    if (a == 255 || b == 255)
-      break;
-
-    ret.push_back((a << 2) | (b >> 4));
-    if (c != 255) {
-      ret.push_back((b << 4) | (c >> 2));
-      if (d != 255) {
-        ret.push_back((c << 6) | d);
-      }
-    }
-  }
-
-  // Handle remaining bytes
-  if (i < in_len) {
-    unsigned char a = base64_decode_table[in[i++]];
-    unsigned char b = (i < in_len) ? base64_decode_table[in[i++]] : 255;
-    unsigned char c = (i < in_len) ? base64_decode_table[in[i++]] : 255;
-    unsigned char d = (i < in_len) ? base64_decode_table[in[i++]] : 255;
-
-    if (a != 255 && b != 255) {
-      ret.push_back((a << 2) | (b >> 4));
-      if (c != 255) {
-        ret.push_back((b << 4) | (c >> 2));
-        if (d != 255) {
-          ret.push_back((c << 6) | d);
-        }
-      }
-    }
-  }
-
+  size_t max_len = simdutf::maximal_binary_length_from_base64(encoded_string.data(), in_len);
+  std::vector<unsigned char> ret(max_len);
+  size_t out_len = max_len;
+  auto r = simdutf::base64_to_binary_safe(
+      encoded_string.data(), in_len,
+      reinterpret_cast<char *>(ret.data()), out_len,
+      simdutf::base64_default_or_url_accept_garbage,
+      simdutf::last_chunk_handling_options::loose,
+      /*decode_up_to_bad_char*/ true);
+  ret.resize(out_len);
   return ret;
 }
 
@@ -262,10 +165,26 @@ double HybridNitroBuffer::write(const std::shared_ptr<ArrayBuffer> &buffer,
     }
     return (double)actualWrite;
   } else if (encoding == "base64" || encoding == "base64url") {
-    std::vector<unsigned char> decoded = base64_decode(string);
-    size_t actualWrite = std::min(toWrite, decoded.size());
-    memcpy(data + start, decoded.data(), actualWrite);
-    return (double)actualWrite;
+    size_t in_len = string.size();
+    if (in_len == 0) {
+      return 0.0;
+    }
+    size_t max_len = simdutf::maximal_binary_length_from_base64(string.data(), in_len);
+    if (max_len <= toWrite) {
+      size_t out_len = max_len;
+      auto r = simdutf::base64_to_binary_safe(
+          string.data(), in_len,
+          reinterpret_cast<char *>(data + start), out_len,
+          simdutf::base64_default_or_url_accept_garbage,
+          simdutf::last_chunk_handling_options::loose,
+          /*decode_up_to_bad_char*/ true);
+      return (double)out_len;
+    } else {
+      std::vector<unsigned char> decoded = base64_decode(string);
+      size_t actualWrite = std::min(toWrite, decoded.size());
+      memcpy(data + start, decoded.data(), actualWrite);
+      return (double)actualWrite;
+    }
   } else if (encoding == "utf16le") {
     size_t written = 0;
     size_t i = 0;
@@ -590,9 +509,9 @@ HybridNitroBuffer::decode(const std::shared_ptr<ArrayBuffer> &buffer,
     }
     return hex;
   } else if (encoding == "base64") {
-    return base64_encode(data + start, (unsigned int)actualRead, false);
+    return base64_encode(data + start, actualRead, false);
   } else if (encoding == "base64url") {
-    return base64_encode(data + start, (unsigned int)actualRead, true);
+    return base64_encode(data + start, actualRead, true);
   } else if (encoding == "utf16le") {
     std::string result;
     result.reserve(actualRead); 

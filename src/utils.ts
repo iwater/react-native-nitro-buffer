@@ -9,9 +9,6 @@ export function atob(data: string): string {
 }
 
 export function btoa(data: string): string {
-    if (typeof global.btoa === 'function') {
-        return global.btoa(data)
-    }
     return Buffer.from(data, 'binary').toString('base64')
 }
 
