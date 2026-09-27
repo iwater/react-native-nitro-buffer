@@ -24,9 +24,27 @@ export class Buffer extends Uint8Array {
             super(arg)
         } else if (typeof arg === 'string') {
             const encoding = Buffer._normalizeEncoding(encodingOrOffset || 'utf8')
-            const len = getNative().byteLength(arg, encoding)
+            // ⚠️ 走 `Buffer.byteLength` 而不是原生 `byteLength`：`hex` / `base64` /
+            //    `base64url` 的预测值按 **JS 字符串长度**算，只有 JS 侧知道。
+            //    （见 `byteLength` 的注释；两边口径必须一致，否则分配的大小会错。）
+            const len = Buffer.byteLength(arg, encoding)
             super(len)
-            getNative().write(this.buffer as ArrayBuffer, arg, 0, len, encoding)
+            const written = getNative().write(this.buffer as ArrayBuffer, arg, 0, len, encoding)
+            // ⚠️ node 的 `Buffer.from(str, enc).length` 是**实际解出的字节数**，而
+            // `byteLength()` 只是**预测值** —— 两者对 `hex` / `base64` 会不等。
+            // 实测（node v22.12.0）：
+            //   `Buffer.byteLength('Y W J j','base64')` = **5**，而
+            //   `Buffer.from('Y W J j','base64').length`  = **3**
+            //   `Buffer.byteLength('61zz','hex')`       = **2**，而
+            //   `Buffer.from('61zz','hex').length`      = **1**
+            // `super(len)` 之后 Uint8Array 的长度改不了，所以按实际写入量另建一个
+            // 精确大小的 Buffer 返回（构造器返回对象是合法的，`Buffer.from` 的结果
+            // 本来就是新分配的，语义一致）。
+            if (written < len) {
+                const exact = Buffer.allocUnsafe(written)
+                exact.set(this.subarray(0, written))
+                return exact
+            }
         } else if (arg instanceof Uint8Array) {
             super(arg)
         } else if (arg instanceof ArrayBuffer) {
@@ -94,7 +112,23 @@ export class Buffer extends Uint8Array {
     }
 
     static byteLength(string: string, encoding: string = 'utf8'): number {
-        return getNative().byteLength(string, Buffer._normalizeEncoding(encoding))
+        const enc = Buffer._normalizeEncoding(encoding)
+        // ⚠️ `hex` / `base64` / `base64url` 的 `byteLength` 在 node 上是**预测值**，
+        //    按 **JS 字符串长度**（UTF-16 码元数）算，**不是**按编码后的字节数。
+        //    实测（node v22.12.0，23 个样例全中）：
+        //      `hex`                = `len >>> 1`
+        //      `base64`/`base64url` = `floor((len - min(尾部 '=' 个数, 2)) * 3 / 4)`
+        //    例：`byteLength('中文','hex')`      = **1**（不是 3）
+        //        `byteLength('Y W J j','base64')` = **5**（而 `Buffer.from('Y W J j','base64').length` 是 **3**）
+        //    原生侧只拿得到 UTF-8 字节，拿不到 JS 字符串长度 ⇒ 这一支只能在 JS 里算。
+        //    （`Buffer.from` 的**实际**长度另算：见构造器里按写入量截断那段。）
+        if (enc === 'hex') return string.length >>> 1
+        if (enc === 'base64' || enc === 'base64url') {
+            let pad = 0
+            for (let i = string.length - 1; i >= 0 && pad < 2 && string.charCodeAt(i) === 0x3d; i--) pad++
+            return Math.floor((string.length - pad) * 3 / 4)
+        }
+        return getNative().byteLength(string, enc)
     }
 
     static isBuffer(obj: any): obj is Buffer {

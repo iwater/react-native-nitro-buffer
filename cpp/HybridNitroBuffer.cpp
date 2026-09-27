@@ -59,6 +59,11 @@ std::shared_ptr<ArrayBuffer> HybridNitroBuffer::allocUnsafe(double size) {
 // ============== Operations ==============
 double HybridNitroBuffer::byteLength(const std::string &string,
                                      const std::string &encoding) {
+  // ⚠️ `hex` / `base64` / `base64url` 这两支**不要单独调用**：node 对它们的
+  //    `byteLength` 是按 **JS 字符串长度（UTF-16 码元数）** 算的预测值，
+  //    而这里只拿得到 UTF-8 字节 ⇒ 非 ASCII 输入下必然算错。
+  //    JS 侧 `Buffer.byteLength` 已经自己算这两支（公式与实测见 `src/Buffer.ts`），
+  //    本文件里保留它们只是为了 HybridObject 的方法面完整。
   if (encoding == "hex") {
     return (double)(string.length() / 2);
   } else if (encoding == "base64" || encoding == "base64url") {
@@ -107,9 +112,14 @@ double HybridNitroBuffer::byteLength(const std::string &string,
       else count += 1;
     }
     return (double)(count * 2);
-  } else if (encoding == "binary" || encoding == "latin1") {
-    // Each character in the original string (0-255) maps to one byte.
-    // The input 'string' is UTF-8 encoded. We count Unicode code points.
+  } else if (encoding == "binary" || encoding == "latin1" || encoding == "ascii") {
+    // ⚠️ node 的 `ascii` / `latin1` 编码都是「**每个 UTF-16 码元一个字节**」
+    // （`codeUnit & 0xFF`），**不是**每个码点一个字节 —— 实测（node v22.12.0）：
+    //   `Buffer.byteLength('😀','latin1')` = **2**（一个代理对 = 两个码元）
+    //   `Buffer.byteLength('中文','ascii')`  = **2**
+    //   `Buffer.from('😀','ascii')` = `3d 00`（= 0xD83D&0xFF, 0xDE00&0xFF）
+    //   `Buffer.from('中','latin1')` = `2d`（= 0x4E2D&0xFF）
+    // 所以这里数的是**码元**：4 字节的 UTF-8 序列（星面字符）算 2 个。
     size_t count = 0;
     size_t i = 0;
     size_t len = string.length();
@@ -128,11 +138,27 @@ double HybridNitroBuffer::byteLength(const std::string &string,
         i += 1;
       }
       count++;
+      // 星面码点（4 字节 UTF-8）在 UTF-16 里是**两个**码元
+      if (i <= len && (byte & 0xF8) == 0xF0) {
+        count++;
+      }
     }
     return (double)count;
   }
   // utf8 (default)
   return (double)string.length();
+}
+
+// 十六进制字符 → 数值；非法返回 -1（`strtol` 对非法输入返回 0，会把非法对
+// 静默写成 0x00，与 node 的「遇到第一个非法字符就停」不一致）。
+static int hexDigit(char c) {
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  if (c >= 'a' && c <= 'f')
+    return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F')
+    return c - 'A' + 10;
+  return -1;
 }
 
 double HybridNitroBuffer::write(const std::shared_ptr<ArrayBuffer> &buffer,
@@ -151,19 +177,59 @@ double HybridNitroBuffer::write(const std::shared_ptr<ArrayBuffer> &buffer,
   if (encoding == "utf8" || encoding == "utf-8") {
     size_t strLen = string.length();
     size_t actualWrite = std::min(toWrite, strLen);
-    memcpy(data + start, string.c_str(), actualWrite);
-    return (double)actualWrite;
-  } else if (encoding == "hex") {
-    size_t strLen = string.length();
-    size_t bytesCount = strLen / 2;
-    size_t actualWrite = std::min(toWrite, bytesCount);
-    for (size_t i = 0; i < actualWrite; i++) {
-      std::string byteString = string.substr(i * 2, 2);
-      unsigned char byte =
-          (unsigned char)strtol(byteString.c_str(), nullptr, 16);
-      data[start + i] = byte;
+    const unsigned char *src = reinterpret_cast<const unsigned char *>(string.data());
+    // ⚠️ 引擎给过来的是 **CESU-8**：孤立代理项（U+D800–U+DFFF）被原样编成
+    //    `ED A0 80`–`ED BF BF`，而 node（以及标准 UTF-8）要求换成 **U+FFFD**
+    //    （`EF BF BD`）。实测（node v22.12.0）：
+    //      `Buffer.from('\uD800','utf8')`   = `efbfbd`（本侧改前是 `eda080`）
+    //      `Buffer.from('a\uD800b','utf8')` = `61efbfbd62`
+    //    合法的代理**对**是 4 字节（`F0 …`），不走这条。
+    //    替换是 3 字节 → 3 字节，所以**长度不变**（`byteLength` 无需改）。
+    //    ⚠️ 只在这一路做：`latin1` / `ascii` 在 node 上是直接取码元 `& 0xFF`
+    //    （`'\uD800'` → `00`），对它们做替换反而会与 node 不一致。
+    bool hasSurrogate = false;
+    for (size_t k = 0; k + 2 < actualWrite; k++) {
+      if (src[k] == 0xED && src[k + 1] >= 0xA0 && src[k + 1] <= 0xBF) {
+        hasSurrogate = true;
+        break;
+      }
     }
-    return (double)actualWrite;
+    if (!hasSurrogate) {
+      memcpy(data + start, string.c_str(), actualWrite);
+      return (double)actualWrite;
+    }
+    size_t written = 0;
+    size_t k = 0;
+    while (k < actualWrite) {
+      if (src[k] == 0xED && k + 2 < actualWrite && src[k + 1] >= 0xA0 &&
+          src[k + 1] <= 0xBF) {
+        data[start + written++] = 0xEF;
+        data[start + written++] = 0xBF;
+        data[start + written++] = 0xBD;
+        k += 3;
+      } else {
+        data[start + written++] = src[k++];
+      }
+    }
+    return (double)written;
+  } else if (encoding == "hex") {
+    // ⚠️ node 在**第一个非十六进制字符**处停下（只输出成对的完整字节），
+    // 而不是把非法对当成 0 —— 实测（node v22.12.0）：
+    //   `Buffer.from('61zz','hex')`  = `61`   （本侧改前是 `6100`）
+    //   `Buffer.from('zz','hex')`    = ``     （本侧改前是 `00`）
+    //   `Buffer.from('6162 63','hex')` = `6162`
+    //   `Buffer.from('0x61','hex')`  = ``
+    // 注意 `byteLength('hex')` 在 node 上是**预测值** `len/2`（可以不等于实际
+    // 解出的字节数），所以这里只改解码，不动 `byteLength`。
+    size_t written = 0;
+    for (size_t i = 0; i + 1 < string.length() && written < toWrite; i += 2) {
+      int hi = hexDigit(string[i]);
+      int lo = hexDigit(string[i + 1]);
+      if (hi < 0 || lo < 0)
+        break;
+      data[start + written++] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+    return (double)written;
   } else if (encoding == "base64" || encoding == "base64url") {
     size_t in_len = string.size();
     if (in_len == 0) {
@@ -223,8 +289,17 @@ double HybridNitroBuffer::write(const std::shared_ptr<ArrayBuffer> &buffer,
       i += seqLen;
     }
     return (double)written;
-  } else if (encoding == "binary" || encoding == "latin1") {
-    // Decode UTF-8 string back to raw bytes (0x00-0xFF)
+  } else if (encoding == "binary" || encoding == "latin1" ||
+             encoding == "ascii") {
+    // node 的 `latin1` / `binary` / `ascii` 编码是**同一个东西**：每个 **UTF-16
+    // 码元**取低 8 位（`codeUnit & 0xFF`）一个字节。实测（node v22.12.0）：
+    //   `Buffer.from('中','latin1')`   = `2d`          （0x4E2D & 0xFF）
+    //   `Buffer.from('é','ascii')`     = `e9`          （0x00E9 & 0xFF，**不**掩高位的 0x7F）
+    //   `Buffer.from('€','ascii')`     = `ac`          （0x20AC & 0xFF）
+    //   `Buffer.from('😀','ascii')`    = `3d 00`       （代理对 = 两个码元）
+    //   `Buffer.from('\uD800','latin1')` = `00`
+    // 所以星面码点要展开成**两个**码元（本侧改前只写一个字节 ⇒ emoji 少一字节）。
+    // 孤立代理项按码元原样取低 8 位 —— 这正是 `utf8` 那一路不能做 U+FFFD 替换的原因。
     size_t written = 0;
     size_t i = 0;
     const char *str = string.c_str();
@@ -258,7 +333,18 @@ double HybridNitroBuffer::write(const std::shared_ptr<ArrayBuffer> &buffer,
         seqLen = 1;
       }
 
-      data[start + written++] = static_cast<uint8_t>(codePoint & 0xFF);
+      if (seqLen == 4) {
+        // 星面码点 → UTF-16 代理对（两个码元，各取低 8 位）
+        uint32_t v = codePoint - 0x10000;
+        uint16_t high = static_cast<uint16_t>(0xD800 | ((v >> 10) & 0x3FF));
+        uint16_t low = static_cast<uint16_t>(0xDC00 | (v & 0x3FF));
+        data[start + written++] = static_cast<uint8_t>(high & 0xFF);
+        if (written < toWrite) {
+          data[start + written++] = static_cast<uint8_t>(low & 0xFF);
+        }
+      } else {
+        data[start + written++] = static_cast<uint8_t>(codePoint & 0xFF);
+      }
       i += seqLen;
     }
     return (double)written;
@@ -459,16 +545,18 @@ static std::string decodeLatin1(const uint8_t *data, size_t len) {
 
 // Decode as ASCII - bytes > 0x7F are replaced with U+FFFD
 static std::string decodeAscii(const uint8_t *data, size_t len) {
+  // ⚠️ node 的 `ascii` **解码**是「每个字节取低 7 位」，一个字节一个字符
+  //    （`byte & 0x7F`），**不是** UTF-8 解码、也不做替换字符。实测（node v22.12.0）：
+  //      `Buffer.from([0x80]).toString('ascii')`            = `\u0000`
+  //      `Buffer.from([0xff]).toString('ascii')`            = `\u007f`
+  //      `Buffer.from([0x41,0x80,0xe9,0x7f]).toString('ascii')` = `A\u0000i\u007f`
+  //      `Buffer.from([0xe4,0xb8,0xad]).toString('ascii')`  = `d8-`
+  //    本侧改前把 >0x7F 的字节换成 U+FFFD ⇒ 与 node 不一致（往返也会变，见 parity 用例）。
   std::string result;
   result.reserve(len);
 
   for (size_t i = 0; i < len; i++) {
-    uint8_t byte = data[i];
-    if (byte <= 0x7F) {
-      result.push_back(static_cast<char>(byte));
-    } else {
-      result.append(UTF8_REPLACEMENT);
-    }
+    result.push_back(static_cast<char>(data[i] & 0x7F));
   }
 
   return result;
