@@ -39,6 +39,155 @@ std::vector<unsigned char> base64_decode(std::string const &encoded_string) {
   return ret;
 }
 
+// ---------------------------------------------------------------------------
+// node 逐字节对齐的 base64 解码（用于「不干净」的输入）
+// ---------------------------------------------------------------------------
+//
+// 为什么需要它：simdutf 的 `accept_garbage` 与 node 的规则**不是**一回事。
+// node 的规则（实测反推，36 个样例全中，node v22.12.0）：
+//   · 逐个 **UTF-16 码元**看它的**低 8 位**（`Buffer.from('中','base64')` 里
+//     `'中'` 的低字节是 `0x2d`，也就是 `-`）；
+//   · 字母表 = 标准 `A-Za-z0-9+/` **并上** URL 的 `-` `_`（**两种 encoding 都接受并集**：
+//     `Buffer.from('-_','base64')` = `fb`，`Buffer.from('+/','base64url')` = `fb`）；
+//   · `=` ⇒ **终止**解码（不是跳过：`Buffer.from('a😀\x00b','base64')` 里
+//     `0xd83d & 0xff == 0x3d == '='` ⇒ 只剩 `'a'` 一个值 ⇒ 0 字节）；
+//   · 其余字符（含空白）⇒ **跳过**；
+//   · 收集到的值按标准分组：4 → 3 字节、3 → 2、2 → 1、落单的 1 个**丢弃**。
+//
+// 实测差异（node vs 走 simdutf 的本侧）：
+//   `Buffer.from('中\x00文\x00字','base64')` → node `f9`(1B) / 本侧 ``(0B)
+//   `Buffer.from('a😀\x00b','base64')`       → node ``(0B)     / 本侧 `69`(1B)
+//   `Buffer.from('中中中中','base64')`        → node `fbefbe`  / 本侧 ``
+// ⚠️ 表是**算出来的，不是手写的**。手写 256 项极易错位：本轮先手写了一版，
+//    把 `'='`(0x3d) 放到了 `'<'`(0x3c) 的位置、又把 `'*'`(0x2a) 当成了 `'+'`(0x2b)
+//    ⇒ `Buffer.from('a😀\x00b','base64')` 仍然差 1 字节（`'='` 被当成"跳过"而不是"终止"）。
+//    对照 node 的探针当场抓到了它 —— **这种表要么算出来，要么用探针逐字符验一遍。**
+static const int8_t *base64NodeTable() {
+  struct Table {
+    int8_t v[256];
+    Table() {
+      for (int i = 0; i < 256; i++)
+        v[i] = -1;
+      for (int i = 'A'; i <= 'Z'; i++)
+        v[i] = static_cast<int8_t>(i - 'A');
+      for (int i = 'a'; i <= 'z'; i++)
+        v[i] = static_cast<int8_t>(i - 'a' + 26);
+      for (int i = '0'; i <= '9'; i++)
+        v[i] = static_cast<int8_t>(i - '0' + 52);
+      v[static_cast<int>('+')] = 62;
+      v[static_cast<int>('/')] = 63;
+      // URL 字母表：node 的**标准** base64 也接受它们
+      // （实测 `Buffer.from('-_','base64')` = `fb`；反向 `Buffer.from('+/','base64url')` = `fb`）
+      v[static_cast<int>('-')] = 62;
+      v[static_cast<int>('_')] = 63;
+      v[static_cast<int>('=')] = -2; // 终止
+    }
+  };
+  static const Table t;
+  return t.v;
+}
+
+/// 「干净」= 只含规范字母表（标准 ∪ URL），且 `=` 只出现在末尾、最多 2 个。
+/// 干净输入下 simdutf 与 node 必然一致（就是规范 base64）⇒ 可以走快路径。
+static bool isCleanBase64(const std::string &s) {
+  size_t n = s.size();
+  size_t pad = 0;
+  while (pad < 3 && pad < n && s[n - 1 - pad] == '=')
+    pad++;
+  if (pad > 2)
+    return false;
+  for (size_t i = 0; i + pad < n; i++) {
+    int8_t v = base64NodeTable()[static_cast<unsigned char>(s[i])];
+    if (v < 0)
+      return false;
+  }
+  return true;
+}
+
+/// node 语义的解码器（见上面的规则说明）。UTF-8 → 码元 → 低 8 位 → 过表。
+static std::vector<unsigned char> base64_decode_node_exact(const std::string &s) {
+  std::vector<unsigned char> out;
+  out.reserve(s.size() / 4 * 3 + 3);
+  uint32_t acc = 0;
+  int n = 0; // 已收集的值的个数（模 4）
+  // 落单的 2 / 3 个值要**补成一个完整的尾组**：4 → 3 字节、3 → 2 字节、2 → 1 字节、
+  // 1 → 丢弃。⚠️ 这段**在 `=` 终止时也要跑** —— 先前的写法在 `=` 处直接 `return`，
+  // 把尾组吞掉了：`Buffer.from('YWJj$ZA==','base64')` 因此只得到 3 字节（node 是 4）。
+  auto flushPartial = [&out, &acc, &n]() {
+    if (n == 3) {
+      out.push_back(static_cast<unsigned char>((acc >> 10) & 0xFF));
+      out.push_back(static_cast<unsigned char>((acc >> 2) & 0xFF));
+    } else if (n == 2) {
+      out.push_back(static_cast<unsigned char>((acc >> 4) & 0xFF));
+    }
+    acc = 0;
+    n = 0;
+  };
+  size_t i = 0;
+  const size_t len = s.size();
+
+  while (i < len) {
+    unsigned char b = static_cast<unsigned char>(s[i]);
+    uint32_t cp = 0;
+    size_t seq = 0;
+    if (b <= 0x7F) {
+      cp = b;
+      seq = 1;
+    } else if ((b & 0xE0) == 0xC0 && i + 1 < len) {
+      cp = ((b & 0x1F) << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3F);
+      seq = 2;
+    } else if ((b & 0xF0) == 0xE0 && i + 2 < len) {
+      cp = ((b & 0x0F) << 12) |
+           ((static_cast<unsigned char>(s[i + 1]) & 0x3F) << 6) |
+           (static_cast<unsigned char>(s[i + 2]) & 0x3F);
+      seq = 3;
+    } else if ((b & 0xF8) == 0xF0 && i + 3 < len) {
+      cp = ((b & 0x07) << 18) |
+           ((static_cast<unsigned char>(s[i + 1]) & 0x3F) << 12) |
+           ((static_cast<unsigned char>(s[i + 2]) & 0x3F) << 6) |
+           (static_cast<unsigned char>(s[i + 3]) & 0x3F);
+      seq = 4;
+    } else {
+      cp = b;
+      seq = 1;
+    }
+    i += seq;
+
+    // 码点 → 一到两个 UTF-16 码元（星面字符是代理对）
+    uint16_t units[2];
+    int nu = 1;
+    if (cp > 0xFFFF) {
+      uint32_t v = cp - 0x10000;
+      units[0] = static_cast<uint16_t>(0xD800 | ((v >> 10) & 0x3FF));
+      units[1] = static_cast<uint16_t>(0xDC00 | (v & 0x3FF));
+      nu = 2;
+    } else {
+      units[0] = static_cast<uint16_t>(cp);
+    }
+
+    for (int u = 0; u < nu; u++) {
+      int8_t v = base64NodeTable()[units[u] & 0xFF];
+      if (v == -2) {
+        flushPartial(); // `=` 终止：尾组要先补出来
+        return out;
+      }
+      if (v < 0)
+        continue; // 非法 ⇒ 跳过
+      acc = (acc << 6) | static_cast<uint32_t>(v);
+      if (++n == 4) {
+        out.push_back(static_cast<unsigned char>((acc >> 16) & 0xFF));
+        out.push_back(static_cast<unsigned char>((acc >> 8) & 0xFF));
+        out.push_back(static_cast<unsigned char>(acc & 0xFF));
+        acc = 0;
+        n = 0;
+      }
+    }
+  }
+
+  flushPartial();
+  return out;
+}
+
 // ============== Allocation ==============
 std::shared_ptr<ArrayBuffer> HybridNitroBuffer::alloc(double size) {
   size_t len = static_cast<size_t>(size);
@@ -235,22 +384,30 @@ double HybridNitroBuffer::write(const std::shared_ptr<ArrayBuffer> &buffer,
     if (in_len == 0) {
       return 0.0;
     }
-    size_t max_len = simdutf::maximal_binary_length_from_base64(string.data(), in_len);
-    if (max_len <= toWrite) {
-      size_t out_len = max_len;
-      auto r = simdutf::base64_to_binary_safe(
-          string.data(), in_len,
-          reinterpret_cast<char *>(data + start), out_len,
-          simdutf::base64_default_or_url_accept_garbage,
-          simdutf::last_chunk_handling_options::loose,
-          /*decode_up_to_bad_char*/ true);
-      return (double)out_len;
-    } else {
-      std::vector<unsigned char> decoded = base64_decode(string);
-      size_t actualWrite = std::min(toWrite, decoded.size());
-      memcpy(data + start, decoded.data(), actualWrite);
-      return (double)actualWrite;
+    // ⚠️ 预扫描（一次 O(n) 字节分类）：**干净**输入才走 simdutf 快路径，
+    //    「不干净」的（空白 / `$` `!` 等非法字符 / 非 ASCII）一律走 node 逐字节
+    //    对齐的标量解码器 —— simdutf 的 `accept_garbage` 与 node 的规则不同。
+    //    干净输入就是规范 base64，两条路必然一致 ⇒ simdutf 的收益不受影响。
+    bool clean = isCleanBase64(string);
+    if (clean) {
+      size_t max_len =
+          simdutf::maximal_binary_length_from_base64(string.data(), in_len);
+      if (max_len <= toWrite) {
+        size_t out_len = max_len;
+        simdutf::base64_to_binary_safe(
+            string.data(), in_len,
+            reinterpret_cast<char *>(data + start), out_len,
+            simdutf::base64_default_or_url_accept_garbage,
+            simdutf::last_chunk_handling_options::loose,
+            /*decode_up_to_bad_char*/ true);
+        return (double)out_len;
+      }
     }
+    std::vector<unsigned char> decoded =
+        clean ? base64_decode(string) : base64_decode_node_exact(string);
+    size_t actualWrite = std::min(toWrite, decoded.size());
+    memcpy(data + start, decoded.data(), actualWrite);
+    return (double)actualWrite;
   } else if (encoding == "utf16le") {
     size_t written = 0;
     size_t i = 0;
