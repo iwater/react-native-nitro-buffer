@@ -746,3 +746,28 @@ export class Buffer extends Uint8Array {
     }
 }
 
+// ── 与 Node 的「静态方法可枚举性」对齐 ─────────────────────────────────────
+//
+// Node 的 `Buffer` 是 CJS 函数式定义，静态方法**可枚举**；而 ES class 的静态方法
+// 按规范是 `enumerable: false`。这看似只是元数据差异，但 `for...in` / `Object.keys` /
+// `Object.assign` / 展开运算符 `{...x}` 都**按可枚举性遍历** —— 而「复制静态成员」
+// 恰恰是 npm 包里极常见的手法。
+//
+// 实测受害者：`safer-buffer@2.1.2`（`safer.js:19-23`）
+//     for (key in Buffer) { if (!Buffer.hasOwnProperty(key)) continue; Safer[key] = Buffer[key] }
+//   ⇒ 不可枚举时复制结果近似空对象 ⇒ `require('safer-buffer').Buffer.isBuffer === undefined`
+//   ⇒ `iconv-lite@0.7.x` 的 `InternalDecoder.write` 抛 `TypeError: not a function`
+//   ⇒ express 5 的 `express.json()` 返回 **200 但 `req.body` 是 `{}`**（静默数据错误）。
+//   （express 4 依赖 iconv-lite 0.4.24，不走这条路径，所以这个缺口长期未被发现。）
+//
+// 判据（与 Node 对齐）：`for (const k in Buffer) n++` 应数出 **12** 个键
+// （本仓未修时只有 1 个：`poolSize`）。
+// 只改 `enumerable`，其余描述符（value / writable / configurable）原样保留。
+for (const key of Object.getOwnPropertyNames(Buffer)) {
+    if (key === 'length' || key === 'name' || key === 'prototype') continue
+    const desc = Object.getOwnPropertyDescriptor(Buffer, key)
+    if (desc && !desc.enumerable) {
+        Object.defineProperty(Buffer, key, { ...desc, enumerable: true })
+    }
+}
+
