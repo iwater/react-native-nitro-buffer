@@ -111,7 +111,24 @@ export class Buffer extends Uint8Array {
         return Buffer.allocUnsafe(size)
     }
 
-    static byteLength(string: string, encoding: string = 'utf8'): number {
+    static byteLength(string: string | ArrayBuffer | ArrayBufferView, encoding: string = 'utf8'): number {
+        // node 的 `byteLength` 收**四种**入参：string / Buffer / TypedArray / ArrayBuffer。
+        // 这里原来只认 string，其余一律让原生抛 `Value is an object, expected a String` ——
+        // 后果不只是 API 不符：got@11 的 `get-buffer` 在 `for await` 循环体里调
+        // `Buffer.byteLength(chunk)`，抛错被引擎转成 `iterator.return()`，readable-stream
+        // 的 destroyer 随即造一个 ABORT_ERR 把原错**掩盖**掉（#9 查了三轮才找到这一层）。
+        if (typeof string !== 'string') {
+            if (string instanceof ArrayBuffer) return string.byteLength
+            if (typeof SharedArrayBuffer !== 'undefined' && string instanceof SharedArrayBuffer) {
+                return (string as any).byteLength
+            }
+            if (ArrayBuffer.isView(string)) return (string as ArrayBufferView).byteLength
+            const error: any = new TypeError(
+                'The "string" argument must be of type string or an instance of Buffer or ArrayBuffer'
+            )
+            error.code = 'ERR_INVALID_ARG_TYPE'
+            throw error
+        }
         const enc = Buffer._normalizeEncoding(encoding)
         // ⚠️ `hex` / `base64` / `base64url` 的 `byteLength` 在 node 上是**预测值**，
         //    按 **JS 字符串长度**（UTF-16 码元数）算，**不是**按编码后的字节数。
