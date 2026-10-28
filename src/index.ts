@@ -16,3 +16,13 @@ export class SlowBuffer extends Uint8Array {
         Object.setPrototypeOf(this, require('./Buffer').Buffer.prototype)
     }
 }
+
+// 见 nitro-net：node 的 `node:buffer` 有 ESM default；用 getter 避免循环依赖下的 TDZ。
+export default {
+    get Buffer() { return Buffer },
+    get constants() { return constants },
+    get INSPECT_MAX_BYTES() { return INSPECT_MAX_BYTES },
+    get kMaxLength() { return kMaxLength },
+    get kStringMaxLength() { return kStringMaxLength },
+    get SlowBuffer() { return SlowBuffer },
+};
