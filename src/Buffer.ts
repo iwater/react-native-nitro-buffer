@@ -11,6 +11,24 @@ function getNative(): NitroBuffer {
     return _native
 }
 
+// ── Unknown encoding rejection (issue #3) ──────────────────────────────────
+// Node's `ERR_UNKNOWN_ENCODING` is a `TypeError` with an own `code` property.
+// The message preserves the caller's verbatim argument (e.g. `NOPE` is not lowercased).
+// Consumers branch on `err.code === 'ERR_UNKNOWN_ENCODING'` (including `assert.throws(fn, { code })`),
+// so throwing a plain TypeError is not sufficient.
+//
+// ⚠️ Validation rules differ across entry points and cannot be unified into a single switch:
+//   · `Buffer.from(str, enc)`: Validates against the table only when enc is a non-empty string
+//     (Node's `fromString` explicitly checks `encoding.length !== 0`); non-strings are ignored -> utf8.
+//   · `toString` / `indexOf` / `lastIndexOf`: Follows `getEncoding` semantics — empty string is also treated as unknown.
+//   · `write`: Empty string and `null` default to utf8; other unknown values throw.
+//   · `byteLength` / `isEncoding`: Never throw (Node treats unknown encodings as utf8 for length calculation).
+function throwUnknownEncoding(enc: any): never {
+    const error: any = new TypeError(`Unknown encoding: ${enc}`)
+    error.code = 'ERR_UNKNOWN_ENCODING'
+    throw error
+}
+
 export class Buffer extends Uint8Array {
     static poolSize = 8192
 
@@ -23,23 +41,32 @@ export class Buffer extends Uint8Array {
         if (typeof arg === 'number') {
             super(arg)
         } else if (typeof arg === 'string') {
-            const encoding = Buffer._normalizeEncoding(encodingOrOffset || 'utf8')
-            // ⚠️ 走 `Buffer.byteLength` 而不是原生 `byteLength`：`hex` / `base64` /
-            //    `base64url` 的预测值按 **JS 字符串长度**算，只有 JS 侧知道。
-            //    （见 `byteLength` 的注释；两边口径必须一致，否则分配的大小会错。）
+            // issue #3: Node's `fromString` validates the table only when encoding is a non-empty string;
+            // non-strings (`Buffer.from('abc', 5)`) and empty strings are ignored -> default to utf8.
+            // Previously `encodingOrOffset || 'utf8'` passed 5 to `_normalizeEncoding`
+            // -> `5.toLowerCase is not a function` (Node accepts it and defaults to utf8).
+            let encoding: string
+            if (typeof encodingOrOffset === 'string' && encodingOrOffset.length !== 0) {
+                if (!Buffer.isEncoding(encodingOrOffset)) throwUnknownEncoding(encodingOrOffset)
+                encoding = Buffer._normalizeEncoding(encodingOrOffset)
+            } else {
+                encoding = 'utf8'
+            }
+            // ⚠️ Use `Buffer.byteLength` instead of native `byteLength`: the predicted size for `hex` /
+            // `base64` / `base64url` is calculated from the JS string length (UTF-16 code units),
+            // which is only known on the JS side (see comments in `byteLength`).
             const len = Buffer.byteLength(arg, encoding)
             super(len)
             const written = getNative().write(this.buffer as ArrayBuffer, arg, 0, len, encoding)
-            // ⚠️ node 的 `Buffer.from(str, enc).length` 是**实际解出的字节数**，而
-            // `byteLength()` 只是**预测值** —— 两者对 `hex` / `base64` 会不等。
-            // 实测（node v22.12.0）：
-            //   `Buffer.byteLength('Y W J j','base64')` = **5**，而
-            //   `Buffer.from('Y W J j','base64').length`  = **3**
-            //   `Buffer.byteLength('61zz','hex')`       = **2**，而
-            //   `Buffer.from('61zz','hex').length`      = **1**
-            // `super(len)` 之后 Uint8Array 的长度改不了，所以按实际写入量另建一个
-            // 精确大小的 Buffer 返回（构造器返回对象是合法的，`Buffer.from` 的结果
-            // 本来就是新分配的，语义一致）。
+            // ⚠️ Node's `Buffer.from(str, enc).length` is the actual number of decoded bytes, whereas
+            // `byteLength()` is only an estimated prediction — they can diverge for `hex` / `base64`.
+            // In Node v22.12.0:
+            //   `Buffer.byteLength('Y W J j','base64')` = 5, but
+            //   `Buffer.from('Y W J j','base64').length`  = 3
+            //   `Buffer.byteLength('61zz','hex')`       = 2, but
+            //   `Buffer.from('61zz','hex').length`      = 1
+            // A Uint8Array cannot change length after `super(len)`, so we allocate and return an exact-sized
+            // Buffer matching actual written bytes (returning an object from a constructor is valid in JS).
             if (written < len) {
                 const exact = Buffer.allocUnsafe(written)
                 exact.set(this.subarray(0, written))
@@ -112,11 +139,9 @@ export class Buffer extends Uint8Array {
     }
 
     static byteLength(string: string | ArrayBuffer | ArrayBufferView, encoding: string = 'utf8'): number {
-        // node 的 `byteLength` 收**四种**入参：string / Buffer / TypedArray / ArrayBuffer。
-        // 这里原来只认 string，其余一律让原生抛 `Value is an object, expected a String` ——
-        // 后果不只是 API 不符：got@11 的 `get-buffer` 在 `for await` 循环体里调
-        // `Buffer.byteLength(chunk)`，抛错被引擎转成 `iterator.return()`，readable-stream
-        // 的 destroyer 随即造一个 ABORT_ERR 把原错**掩盖**掉（#9 查了三轮才找到这一层）。
+        // Node's `byteLength` accepts 4 types of arguments: string / Buffer / TypedArray / ArrayBuffer.
+        // Previously only string was accepted, causing the native layer to throw `Value is an object, expected a String`.
+        // This broke packages like got@11 which calls `Buffer.byteLength(chunk)` inside an async iterator loop.
         if (typeof string !== 'string') {
             if (string instanceof ArrayBuffer) return string.byteLength
             if (typeof SharedArrayBuffer !== 'undefined' && string instanceof SharedArrayBuffer) {
@@ -129,16 +154,19 @@ export class Buffer extends Uint8Array {
             error.code = 'ERR_INVALID_ARG_TYPE'
             throw error
         }
-        const enc = Buffer._normalizeEncoding(encoding)
-        // ⚠️ `hex` / `base64` / `base64url` 的 `byteLength` 在 node 上是**预测值**，
-        //    按 **JS 字符串长度**（UTF-16 码元数）算，**不是**按编码后的字节数。
-        //    实测（node v22.12.0，23 个样例全中）：
-        //      `hex`                = `len >>> 1`
-        //      `base64`/`base64url` = `floor((len - min(尾部 '=' 个数, 2)) * 3 / 4)`
-        //    例：`byteLength('中文','hex')`      = **1**（不是 3）
-        //        `byteLength('Y W J j','base64')` = **5**（而 `Buffer.from('Y W J j','base64').length` 是 **3**）
-        //    原生侧只拿得到 UTF-8 字节，拿不到 JS 字符串长度 ⇒ 这一支只能在 JS 里算。
-        //    （`Buffer.from` 的**实际**长度另算：见构造器里按写入量截断那段。）
+        // Node's `byteLength` never throws on any encoding: non-strings (null / 5 / true / {})
+        // and unknown strings are all counted as utf8 (in Node v22.11.0, all return `string.length`).
+        // Previously, passing a non-string directly to `_normalizeEncoding` caused `null.toLowerCase` to crash.
+        const enc = Buffer._normalizeEncoding(typeof encoding === 'string' ? encoding : 'utf8')
+        // ⚠️ In Node, `byteLength` for `hex` / `base64` / `base64url` is an estimate calculated from
+        // JS string length (UTF-16 code units), NOT from the actual decoded byte count.
+        // Tested against Node v22.12.0:
+        //   `hex`                = `len >>> 1`
+        //   `base64`/`base64url` = `floor((len - min(trailing '=' count, 2)) * 3 / 4)`
+        // E.g.: `byteLength('中文','hex')`      = 1 (not 3)
+        //       `byteLength('Y W J j','base64')` = 5 (whereas `Buffer.from('Y W J j','base64').length` is 3)
+        // The native side only receives UTF-8 bytes and cannot see JS string length, so this must be computed in JS.
+        // (The actual length for `Buffer.from` is truncated based on actual bytes written; see constructor).
         if (enc === 'hex') return string.length >>> 1
         if (enc === 'base64' || enc === 'base64url') {
             let pad = 0
@@ -204,11 +232,20 @@ export class Buffer extends Uint8Array {
             encoding = 'utf8'
         }
 
-        return getNative().write(this.buffer as ArrayBuffer, string, this.byteOffset + (offset as number), length as number, Buffer._normalizeEncoding(encoding as string))
+        // issue #3: In `write`, empty string and `null` default to utf8 (Node does not throw on
+        // `write('a','')` or `write('a',0,1,null)`); only other unknown values throw (`5` / `true` / `'nope'`).
+        let enc: any = encoding
+        if (enc === undefined || enc === null || enc === '') {
+            enc = 'utf8'
+        } else {
+            if (!Buffer.isEncoding(enc)) throwUnknownEncoding(enc)
+            enc = Buffer._normalizeEncoding(enc)
+        }
+
+        return getNative().write(this.buffer as ArrayBuffer, string, this.byteOffset + (offset as number), length as number, enc)
     }
 
     toString(encoding?: string, start?: number, end?: number): string {
-        if (encoding === undefined) encoding = 'utf8'
         if (start === undefined) start = 0
         if (end === undefined) end = this.length
 
@@ -216,11 +253,22 @@ export class Buffer extends Uint8Array {
         if (end > this.length) end = this.length
         if (start >= end) return ''
 
+        if (encoding === undefined) encoding = 'utf8'
+        // issue #3: `toString` follows Node's `getEncoding`, where empty string is also treated as unknown
+        // (`buf.toString('')` throws `Unknown encoding: `); non-strings also throw using their String value.
+        // ⚠️ Validation must occur after the empty range early-return above: Node normalizes start/end first,
+        // returning `''` immediately for an empty buffer or empty slice before checking encoding.
+        // Thus `Buffer.alloc(0).toString('nope')` returns `''` in Node rather than throwing.
+        else if (!Buffer.isEncoding(encoding)) throwUnknownEncoding(encoding)
+
         return getNative().decode(this.buffer as ArrayBuffer, this.byteOffset + start, end - start, Buffer._normalizeEncoding(encoding))
     }
 
     indexOf(value: string | number | Uint8Array, byteOffset?: number, encoding?: string): number {
         if (typeof value === 'string') {
+            // issue #3: Encoding validation only applies to string needles (Node does not throw on `indexOf(97, 0, 'nope')`);
+            // string needles follow `getEncoding` where empty string is also treated as unknown.
+            if (encoding !== undefined && !Buffer.isEncoding(encoding)) throwUnknownEncoding(encoding)
             const needle = Buffer.from(value, encoding)
             return getNative().indexOfBuffer(this.buffer as ArrayBuffer, needle.buffer as ArrayBuffer, byteOffset || 0, this.length)
         }
@@ -243,6 +291,8 @@ export class Buffer extends Uint8Array {
         }
 
         if (typeof value === 'string') {
+            // issue #3: Same as `indexOf` — validates encoding only for string needles; empty string is also unknown.
+            if (encoding !== undefined && !Buffer.isEncoding(encoding)) throwUnknownEncoding(encoding)
             const needle = Buffer.from(value, encoding)
             if (needle.length === 0) return -1
             // We search in [0, byteOffset + needle.length]. 
@@ -797,23 +847,20 @@ export class Buffer extends Uint8Array {
     }
 }
 
-// ── 与 Node 的「静态方法可枚举性」对齐 ─────────────────────────────────────
+// ── Align static method enumerability with Node ────────────────────────────
 //
-// Node 的 `Buffer` 是 CJS 函数式定义，静态方法**可枚举**；而 ES class 的静态方法
-// 按规范是 `enumerable: false`。这看似只是元数据差异，但 `for...in` / `Object.keys` /
-// `Object.assign` / 展开运算符 `{...x}` 都**按可枚举性遍历** —— 而「复制静态成员」
-// 恰恰是 npm 包里极常见的手法。
+// Node's `Buffer` is defined as a CJS function whose static methods are enumerable.
+// In contrast, ES class static methods default to `enumerable: false`.
+// While this seems like subtle metadata, `for...in`, `Object.keys`, `Object.assign`,
+// and object spreads `{...x}` all iterate based on enumerability — and copying static
+// members is very common across the npm ecosystem (e.g. `safer-buffer@2.1.2`).
 //
-// 实测受害者：`safer-buffer@2.1.2`（`safer.js:19-23`）
-//     for (key in Buffer) { if (!Buffer.hasOwnProperty(key)) continue; Safer[key] = Buffer[key] }
-//   ⇒ 不可枚举时复制结果近似空对象 ⇒ `require('safer-buffer').Buffer.isBuffer === undefined`
-//   ⇒ `iconv-lite@0.7.x` 的 `InternalDecoder.write` 抛 `TypeError: not a function`
-//   ⇒ express 5 的 `express.json()` 返回 **200 但 `req.body` 是 `{}`**（静默数据错误）。
-//   （express 4 依赖 iconv-lite 0.4.24，不走这条路径，所以这个缺口长期未被发现。）
+// When non-enumerable, copying resulted in a nearly empty object, causing
+// `require('safer-buffer').Buffer.isBuffer` to be undefined, breaking `iconv-lite@0.7.x`
+// and Express 5's `express.json()`.
 //
-// 判据（与 Node 对齐）：`for (const k in Buffer) n++` 应数出 **12** 个键
-// （本仓未修时只有 1 个：`poolSize`）。
-// 只改 `enumerable`，其余描述符（value / writable / configurable）原样保留。
+// In Node parity: `for (const k in Buffer) n++` enumerates 12 keys (was only 1: `poolSize`).
+// Only modifies `enumerable: true`, preserving value/writable/configurable descriptors.
 for (const key of Object.getOwnPropertyNames(Buffer)) {
     if (key === 'length' || key === 'name' || key === 'prototype') continue
     const desc = Object.getOwnPropertyDescriptor(Buffer, key)

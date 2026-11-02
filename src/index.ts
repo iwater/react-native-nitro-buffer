@@ -17,7 +17,6 @@ export class SlowBuffer extends Uint8Array {
     }
 }
 
-// 见 nitro-net：node 的 `node:buffer` 有 ESM default；用 getter 避免循环依赖下的 TDZ。
 export default {
     get Buffer() { return Buffer },
     get constants() { return constants },
