@@ -862,10 +862,14 @@ export class Buffer extends Uint8Array {
 // In Node parity: `for (const k in Buffer) n++` enumerates 12 keys (was only 1: `poolSize`).
 // Only modifies `enumerable: true`, preserving value/writable/configurable descriptors.
 for (const key of Object.getOwnPropertyNames(Buffer)) {
-    if (key === 'length' || key === 'name' || key === 'prototype') continue
+    if (key === 'length' || key === 'name' || key === 'prototype' || key === 'arguments' || key === 'caller') continue
     const desc = Object.getOwnPropertyDescriptor(Buffer, key)
-    if (desc && !desc.enumerable) {
-        Object.defineProperty(Buffer, key, { ...desc, enumerable: true })
+    if (desc && !desc.enumerable && desc.configurable) {
+        try {
+            Object.defineProperty(Buffer, key, { ...desc, enumerable: true })
+        } catch {
+            // Ignore if engine restricts property reconfiguration
+        }
     }
 }
 
